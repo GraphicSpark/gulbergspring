@@ -1,0 +1,33 @@
+.range-tabs {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.range-tabs-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.range-tab {
+  padding: 0 0 5px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.range-tab:hover {
+  color: var(--heading);
+}
+
+.range-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}

@@ -1,0 +1,109 @@
+import { useEffect, useRef, useState } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { ChevronDown, IdCard, LogOut, Menu } from 'lucide-react'
+import { useAuth } from '../context/useAuth'
+import { ROLE_LABELS } from '../lib/permissions'
+
+const TITLES = {
+  '/': 'Dashboard',
+  '/clients': 'Clients',
+  '/users': 'User Management',
+  '/customers': 'Customer',
+  '/profile': 'Profile',
+  '/role-access': 'Role Access',
+}
+
+function initials(name, email) {
+  const src = (name || '').trim() || (email || '').trim()
+  if (!src) return '?'
+  const parts = src.split(/\s+/)
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+}
+
+export default function Topbar({ onToggleSidebar }) {
+  const { profile, session, signOut } = useAuth()
+  const { pathname } = useLocation()
+  const navigate = useNavigate()
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDocClick = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false)
+    }
+    const onEsc = (e) => e.key === 'Escape' && setMenuOpen(false)
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [menuOpen])
+
+  const name = profile?.full_name || session?.user?.email || 'Account'
+  const email = profile?.email || session?.user?.email || ''
+  const roleLabel = profile?.role ? ROLE_LABELS[profile.role] ?? profile.role : ''
+
+  const handleSignOut = async () => {
+    await signOut()
+    navigate('/login', { replace: true })
+  }
+
+  return (
+    <header className="topbar">
+      <div className="topbar-left">
+        <button
+          type="button"
+          className="icon-btn hamburger"
+          onClick={onToggleSidebar}
+          aria-label="Toggle menu"
+        >
+          <Menu size={18} />
+        </button>
+        <span className="topbar-title">{TITLES[pathname] ?? 'GraphicSpark CRM'}</span>
+      </div>
+
+      <div className="profile-menu" ref={menuRef}>
+        <button
+          type="button"
+          className="profile-trigger"
+          onClick={() => setMenuOpen((v) => !v)}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+        >
+          <span className="avatar">
+            {profile?.avatar_url ? (
+              <img src={profile.avatar_url} alt="" />
+            ) : (
+              initials(profile?.full_name, email)
+            )}
+          </span>
+          <span className="who">
+            <b>{name}</b>
+            <span>{roleLabel}</span>
+          </span>
+          <ChevronDown size={15} />
+        </button>
+
+        {menuOpen && (
+          <div className="dropdown" role="menu">
+            <div className="dd-head">
+              <b>{name}</b>
+              <span>{email}</span>
+            </div>
+            <Link to="/profile" role="menuitem" onClick={() => setMenuOpen(false)}>
+              <IdCard size={15} />
+              Profile
+            </Link>
+            <button type="button" className="danger" role="menuitem" onClick={handleSignOut}>
+              <LogOut size={15} />
+              Logout
+            </button>
+          </div>
+        )}
+      </div>
+    </header>
+  )
+}
