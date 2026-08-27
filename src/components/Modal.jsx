@@ -2,6 +2,8 @@ import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import './modal.css'
 
+// Closes only via the X button or Esc - NOT a backdrop click, so a stray click
+// while filling a form never loses the entered data.
 export default function Modal({ open, onClose, title, children, width = 480 }) {
   useEffect(() => {
     if (!open) return
@@ -17,14 +19,8 @@ export default function Modal({ open, onClose, title, children, width = 480 }) {
   if (!open) return null
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div
-        className="modal-card"
-        style={{ maxWidth: width }}
-        role="dialog"
-        aria-modal="true"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div className="modal-backdrop">
+      <div className="modal-card" style={{ maxWidth: width }} role="dialog" aria-modal="true">
         <div className="modal-head">
           <h2>{title}</h2>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">

@@ -1,17 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { ChevronDown, IdCard, LogOut, Menu } from 'lucide-react'
 import { useAuth } from '../context/useAuth'
 import { ROLE_LABELS } from '../lib/permissions'
-
-const TITLES = {
-  '/': 'Dashboard',
-  '/clients': 'Clients',
-  '/users': 'User Management',
-  '/customers': 'Customer',
-  '/profile': 'Profile',
-  '/role-access': 'Role Access',
-}
 
 function initials(name, email) {
   const src = (name || '').trim() || (email || '').trim()
@@ -23,7 +14,6 @@ function initials(name, email) {
 
 export default function Topbar({ onToggleSidebar }) {
   const { profile, session, signOut } = useAuth()
-  const { pathname } = useLocation()
   const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef(null)
@@ -53,17 +43,14 @@ export default function Topbar({ onToggleSidebar }) {
 
   return (
     <header className="topbar">
-      <div className="topbar-left">
-        <button
-          type="button"
-          className="icon-btn hamburger"
-          onClick={onToggleSidebar}
-          aria-label="Toggle menu"
-        >
-          <Menu size={18} />
-        </button>
-        <span className="topbar-title">{TITLES[pathname] ?? 'GraphicSpark CRM'}</span>
-      </div>
+      <button
+        type="button"
+        className="icon-btn hamburger"
+        onClick={onToggleSidebar}
+        aria-label="Toggle menu"
+      >
+        <Menu size={18} />
+      </button>
 
       <div className="profile-menu" ref={menuRef}>
         <button
@@ -72,6 +59,7 @@ export default function Topbar({ onToggleSidebar }) {
           onClick={() => setMenuOpen((v) => !v)}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
+          aria-label="Account menu"
         >
           <span className="avatar">
             {profile?.avatar_url ? (
@@ -84,7 +72,7 @@ export default function Topbar({ onToggleSidebar }) {
             <b>{name}</b>
             <span>{roleLabel}</span>
           </span>
-          <ChevronDown size={15} />
+          <ChevronDown size={14} />
         </button>
 
         {menuOpen && (

@@ -9,7 +9,8 @@
 //
 // Actions (POST JSON { action, ... }):
 //   create        { full_name, email, phone, role, password }   -> needs users.add
-//   update        { user_id, full_name?, phone?, role? }         -> needs users.edit
+//   update        { user_id, full_name?, phone?, role?, commission_kind?,
+//                   commission_value?, commission_active? }         -> needs users.edit
 //   set_password  { user_id, password }                          -> needs users.edit
 //   set_active    { user_ids: [], active: bool }                 -> users.edit (on) / users.delete (off)
 
@@ -151,6 +152,17 @@ Deno.serve(async (req) => {
       const patch: Record<string, unknown> = {}
       if (typeof body.full_name === 'string') patch.full_name = body.full_name.trim()
       if ('phone' in body) patch.phone = body.phone ? String(body.phone).trim() : null
+
+      if (body.commission_kind === 'fixed' || body.commission_kind === 'percent') {
+        patch.commission_kind = body.commission_kind
+      }
+      if ('commission_value' in body) {
+        const v = Number(body.commission_value)
+        patch.commission_value = Number.isFinite(v) && v >= 0 ? v : 0
+      }
+      if (typeof body.commission_active === 'boolean') {
+        patch.commission_active = body.commission_active
+      }
 
       if (body.role) {
         const newRole = String(body.role)

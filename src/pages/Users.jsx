@@ -58,7 +58,7 @@ export default function Users() {
   const fetchRows = useCallback(async () => {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, full_name, email, phone, role, avatar_url, is_active, created_at')
+      .select('id, full_name, email, phone, role, avatar_url, is_active, commission_kind, commission_value, commission_active, created_at')
       .order('created_at', { ascending: false })
     if (error) toast.error('Could not load users')
     setRows(data ?? [])
@@ -496,6 +496,9 @@ function EditUserModal({ user, isSuperAdmin, onClose, onDone }) {
     full_name: user.full_name ?? '',
     phone: user.phone ?? '',
     role: user.role,
+    commission_active: user.commission_active ?? true,
+    commission_kind: user.commission_kind ?? 'fixed',
+    commission_value: String(user.commission_value ?? ''),
   })
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
@@ -505,11 +508,18 @@ function EditUserModal({ user, isSuperAdmin, onClose, onDone }) {
   const submit = async (e) => {
     e.preventDefault()
     setErr('')
+    const cv = Number(form.commission_value) || 0
+    if (form.commission_active && form.commission_kind === 'percent' && cv > 100) {
+      return setErr('Percent cannot exceed 100')
+    }
     setBusy(true)
     try {
       await adminUsers.update(user.id, {
         full_name: form.full_name.trim(),
         phone: form.phone.trim() || null,
+        commission_active: form.commission_active,
+        commission_kind: form.commission_kind,
+        commission_value: cv,
         ...(form.role !== user.role ? { role: form.role } : {}),
       })
       toast.success('User updated')
@@ -561,6 +571,54 @@ function EditUserModal({ user, isSuperAdmin, onClose, onDone }) {
           <label>Email</label>
           <input className="input" value={user.email} disabled />
         </div>
+
+        <div className="section-title" style={{ marginTop: 2 }}>Agent commission</div>
+        <label className="check-line">
+          <input
+            type="checkbox"
+            checked={form.commission_active}
+            onChange={(e) => set('commission_active', e.target.checked)}
+          />
+          This agent earns commission on their orders
+        </label>
+        {form.commission_active && (
+          <>
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="e-ck">Type</label>
+                <select
+                  id="e-ck"
+                  className="select"
+                  value={form.commission_kind}
+                  onChange={(e) => set('commission_kind', e.target.value)}
+                >
+                  <option value="fixed">Fixed Rs per order</option>
+                  <option value="percent">% of GraphicSpark cut</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="e-cv">{form.commission_kind === 'percent' ? 'Percent' : 'Amount (Rs)'}</label>
+                <input
+                  id="e-cv"
+                  className="input"
+                  type="number"
+                  min="0"
+                  value={form.commission_value}
+                  onChange={(e) => set('commission_value', e.target.value)}
+                />
+              </div>
+            </div>
+            <span className="field-hint">
+              Applies when this user creates an order and it is confirmed.
+            </span>
+          </>
+        )}
+        {!form.commission_active && (
+          <span className="field-hint">
+            Commission is off — this agent&rsquo;s orders give their whole cut to GraphicSpark.
+          </span>
+        )}
+
         <div className="modal-actions">
           <button type="button" className="btn btn-ghost btn-square" onClick={onClose}>
             Cancel

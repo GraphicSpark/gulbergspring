@@ -1,8 +1,10 @@
 import { NavLink } from 'react-router-dom'
 import {
   Building2,
+  ClipboardList,
   IdCard,
   LayoutDashboard,
+  PackageOpen,
   ShieldCheck,
   UserRound,
   UsersRound,
@@ -20,7 +22,9 @@ const NAV_SECTIONS = [
     label: 'Records',
     items: [
       { to: '/clients', label: 'Clients', icon: Building2, page: 'clients' },
+      { to: '/packages', label: 'Packages', icon: PackageOpen, page: 'clients' },
       { to: '/customers', label: 'Customer', icon: UserRound, page: 'customers' },
+      { to: '/orders', label: 'Orders', icon: ClipboardList, page: 'orders' },
     ],
   },
   {

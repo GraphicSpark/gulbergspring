@@ -34,24 +34,15 @@ import BulkBar from '../components/data/BulkBar'
 import StatCards from '../components/data/StatCards'
 
 const PAGE_SIZE = 15
-const GENDERS = ['male', 'female', 'other']
 const SOURCES = ['walk-in', 'referral', 'social', 'other']
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : '')
 
-const EMPTY = {
-  full_name: '',
-  phoneLocal: '',
-  email: '',
-  gender: '',
-  source: '',
-  address: '',
-  notes: '',
-}
+const EMPTY = { full_name: '', phoneLocal: '', source: '', notes: '' }
 
 const SAMPLE_CSV = [
-  'Name,Phone,Source,Email (optional),Gender (optional),Location Area (optional)',
-  'Ayesha Siddiqui,3001234567,referral,ayesha@example.com,female,Gulberg III Lahore',
-  'Bilal Ahmed,+92 321 9876543,walk-in,,,',
+  'Name,Phone,Source',
+  'Ayesha Siddiqui,3001234567,referral',
+  'Bilal Ahmed,+92 321 9876543,walk-in',
 ].join('\r\n')
 
 function ViewRow({ label, value }) {
@@ -75,7 +66,6 @@ export default function Customers() {
   const [page, setPage] = useState(1)
 
   const [search, setSearch] = useState('')
-  const [gender, setGender] = useState('all')
   const [source, setSource] = useState('all')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
@@ -92,7 +82,7 @@ export default function Customers() {
   const fetchRows = useCallback(async () => {
     const { data, error } = await supabase
       .from('customers')
-      .select('id, full_name, phone, email, gender, address, source, notes, created_at')
+      .select('id, ref_no, full_name, phone, source, notes, created_at')
       .order('created_at', { ascending: false })
     if (error) toast.error('Could not load customers')
     setRows(data ?? [])
@@ -107,24 +97,21 @@ export default function Customers() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     return rows.filter((c) => {
-      if (gender !== 'all' && c.gender !== gender) return false
       if (source !== 'all' && c.source !== source) return false
       if (from && c.created_at < from) return false
       if (to && c.created_at > `${to}T23:59:59`) return false
       if (q) {
-        const hay = `${c.full_name} ${c.email ?? ''} ${c.phone ?? ''} ${formatPkPhone(c.phone)}`.toLowerCase()
+        const hay = `${c.full_name} ${c.phone ?? ''} ${formatPkPhone(c.phone)}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       return true
     })
-  }, [rows, search, gender, source, from, to])
+  }, [rows, search, source, from, to])
 
-  const activeFilters =
-    (gender !== 'all' ? 1 : 0) + (source !== 'all' ? 1 : 0) + (from ? 1 : 0) + (to ? 1 : 0)
+  const activeFilters = (source !== 'all' ? 1 : 0) + (from ? 1 : 0) + (to ? 1 : 0)
 
   const resetPage = () => setPage(1)
   const clearFilters = () => {
-    setGender('all')
     setSource('all')
     setFrom('')
     setTo('')
@@ -159,12 +146,10 @@ export default function Customers() {
 
   const exportCsv = () => {
     const headers = [
+      { key: 'ref_no', label: 'ID' },
       { key: 'full_name', label: 'Name' },
       { key: 'phone', label: 'Phone' },
       { key: 'source', label: 'Source' },
-      { key: 'email', label: 'Email' },
-      { key: 'gender', label: 'Gender' },
-      { key: 'address', label: 'Location Area' },
       { key: 'created_at', label: 'Added' },
     ]
     const data = filtered.map((c) => ({
@@ -201,14 +186,13 @@ export default function Customers() {
   }
 
   const columns = [
+    { key: 'ref', header: 'ID', render: (c) => `#${c.ref_no}` },
     {
       key: 'name',
       header: 'Name',
       render: (c) => <span className="primary">{c.full_name}</span>,
     },
     { key: 'phone', header: 'Contact', render: (c) => formatPkPhone(c.phone) },
-    { key: 'email', header: 'Email', render: (c) => c.email || '—' },
-    { key: 'gender', header: 'Gender', render: (c) => cap(c.gender) || '—' },
     { key: 'source', header: 'Source', render: (c) => cap(c.source) || '—' },
     { key: 'added', header: 'Added', render: (c) => fmtDate(c.created_at) },
     {
@@ -274,42 +258,25 @@ export default function Customers() {
           setSearch(v)
           resetPage()
         }}
-        searchPlaceholder="Search name, contact or email..."
+        searchPlaceholder="Search name or contact..."
         activeCount={activeFilters}
         onClear={clearFilters}
         inline={
-          <>
-            <select
-              className="filter-select"
-              value={gender}
-              onChange={(e) => {
-                setGender(e.target.value)
-                resetPage()
-              }}
-            >
-              <option value="all">Any gender</option>
-              {GENDERS.map((g) => (
-                <option key={g} value={g}>
-                  {cap(g)}
-                </option>
-              ))}
-            </select>
-            <select
-              className="filter-select"
-              value={source}
-              onChange={(e) => {
-                setSource(e.target.value)
-                resetPage()
-              }}
-            >
-              <option value="all">Any source</option>
-              {SOURCES.map((s) => (
-                <option key={s} value={s}>
-                  {cap(s)}
-                </option>
-              ))}
-            </select>
-          </>
+          <select
+            className="filter-select"
+            value={source}
+            onChange={(e) => {
+              setSource(e.target.value)
+              resetPage()
+            }}
+          >
+            <option value="all">Any source</option>
+            {SOURCES.map((s) => (
+              <option key={s} value={s}>
+                {cap(s)}
+              </option>
+            ))}
+          </select>
         }
         advanced={
           <>
@@ -436,10 +403,7 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, onClose, on
       ? {
           full_name: row.full_name ?? '',
           phoneLocal: fromStored(row.phone),
-          email: row.email ?? '',
-          gender: row.gender ?? '',
           source: row.source ?? '',
-          address: row.address ?? '',
           notes: row.notes ?? '',
         }
       : EMPTY,
@@ -449,8 +413,6 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, onClose, on
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }))
 
   const phoneErr = pkPhoneError(form.phoneLocal)
-  const emailErr =
-    form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email) ? 'Enter a valid email' : ''
 
   const submit = async (e) => {
     e.preventDefault()
@@ -458,16 +420,12 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, onClose, on
     if (!form.full_name.trim()) return setErr('Name is required')
     if (!isValidPkMobile(form.phoneLocal)) return setErr(phoneErr || 'Invalid phone number')
     if (!form.source) return setErr('Source is required')
-    if (emailErr) return setErr(emailErr)
 
     setBusy(true)
     const payload = {
       full_name: form.full_name.trim(),
       phone: toStored(form.phoneLocal),
-      email: form.email.trim() || null,
-      gender: form.gender || null,
       source: form.source,
-      address: form.address.trim() || null,
       notes: form.notes.trim() || null,
     }
     const q = editing
@@ -480,20 +438,16 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, onClose, on
     onDone()
   }
 
-  const title =
-    mode === 'view' ? row.full_name : editing ? 'Edit customer' : 'Add customer'
+  const title = mode === 'view' ? row.full_name : editing ? 'Edit customer' : 'Add customer'
 
-  // ---- read-only view ----
   if (mode === 'view') {
     return (
-      <Modal open onClose={onClose} title={title} width={480}>
+      <Modal open onClose={onClose} title={title} width={460}>
         <div>
+          <ViewRow label="Customer ID" value={`#${row.ref_no}`} />
           <ViewRow label="Customer name" value={row.full_name} />
           <ViewRow label="Contact no" value={formatPkPhone(row.phone)} />
           <ViewRow label="Source" value={cap(row.source)} />
-          <ViewRow label="Email" value={row.email} />
-          <ViewRow label="Gender" value={cap(row.gender)} />
-          <ViewRow label="Location area" value={row.address} />
           <ViewRow label="Notes" value={row.notes} />
           <ViewRow label="Added" value={fmtDate(row.created_at)} />
         </div>
@@ -511,9 +465,8 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, onClose, on
     )
   }
 
-  // ---- add / edit form ----
   return (
-    <Modal open onClose={onClose} title={title} width={520}>
+    <Modal open onClose={onClose} title={title} width={480}>
       <form className="modal-form" onSubmit={submit}>
         {err && <div className="modal-error">{err}</div>}
 
@@ -555,48 +508,6 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, onClose, on
               ))}
             </select>
           </div>
-        </div>
-
-        <div className="field-row">
-          <div className="field">
-            <label htmlFor="c-email">Email (optional)</label>
-            <input
-              id="c-email"
-              type="email"
-              className={`input${emailErr ? ' invalid' : ''}`}
-              value={form.email}
-              onChange={(e) => set('email', e.target.value)}
-              autoComplete="off"
-            />
-            {emailErr && <span className="field-error">{emailErr}</span>}
-          </div>
-          <div className="field">
-            <label htmlFor="c-gender">Gender (optional)</label>
-            <select
-              id="c-gender"
-              className="select"
-              value={form.gender}
-              onChange={(e) => set('gender', e.target.value)}
-            >
-              <option value="">—</option>
-              {GENDERS.map((g) => (
-                <option key={g} value={g}>
-                  {cap(g)}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div className="field">
-          <label htmlFor="c-area">Location area (optional)</label>
-          <input
-            id="c-area"
-            className="input"
-            value={form.address}
-            onChange={(e) => set('address', e.target.value)}
-            placeholder="e.g. Gulberg III, Lahore"
-          />
         </div>
 
         <div className="field">
@@ -653,9 +564,6 @@ function ImportModal({ createdBy, onClose, onDone }) {
     const iName = pick(head, 'customer name', 'full name', 'name')
     const iPhone = pick(head, 'phone', 'contact', 'mobile')
     const iSource = pick(head, 'source')
-    const iEmail = pick(head, 'email', 'e-mail')
-    const iGender = pick(head, 'gender')
-    const iArea = pick(head, 'location area', 'location', 'area', 'address')
 
     if (iName === -1 || iPhone === -1 || iSource === -1) {
       toast.error('CSV needs Name, Phone and Source columns')
@@ -682,15 +590,10 @@ function ImportModal({ createdBy, onClose, onDone }) {
         skipped.push({ line: r + 1, reason: `invalid source "${(row[iSource] ?? '').trim()}"` })
         continue
       }
-      const email = iEmail !== -1 ? (row[iEmail] ?? '').trim() : ''
-      const gender = iGender !== -1 ? (row[iGender] ?? '').trim().toLowerCase() : ''
       valid.push({
         full_name: name,
         phone: toStored(local),
         source: src,
-        email: email || null,
-        gender: GENDERS.includes(gender) ? gender : null,
-        address: iArea !== -1 ? (row[iArea] ?? '').trim() || null : null,
         created_by: createdBy,
       })
     }
@@ -708,12 +611,11 @@ function ImportModal({ createdBy, onClose, onDone }) {
   }
 
   return (
-    <Modal open onClose={onClose} title="Import customers" width={480}>
+    <Modal open onClose={onClose} title="Import customers" width={460}>
       <div className="modal-form">
         <p className="field-hint">
-          CSV with a header row. Required columns: <b>Name</b>, <b>Phone</b>, <b>Source</b>.
-          Email, Gender and Location Area are optional. Phone is validated the same way
-          (10 digits, starts with 3).
+          CSV with a header row. Columns: <b>Name</b>, <b>Phone</b>, <b>Source</b> (all required).
+          Phone is validated the same way (10 digits, starts with 3).
         </p>
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

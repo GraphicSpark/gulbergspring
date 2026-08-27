@@ -13,21 +13,24 @@ export const ROLE_LABELS = {
 // Roles whose defaults live in role_permissions (super_admin is not stored).
 export const MANAGED_ROLES = ['admin', 'agent', 'ops']
 
-export const PERM_ACTIONS = ['view', 'add', 'edit', 'delete']
+export const PERM_ACTIONS = ['view', 'add', 'edit', 'delete', 'confirm']
 
 export const ACTION_LABELS = {
   view: 'View',
   add: 'Add',
   edit: 'Edit',
   delete: 'Delete',
+  confirm: 'Confirm',
 }
 
 // The page catalogue - drives the Role Access matrix and the sidebar gating.
 // `delete` on the users page means "deactivate".
+// `confirm` on the orders page means "mark the service availed" (locks commission).
 export const PERMISSION_PAGES = [
   { key: 'dashboard', label: 'Dashboard', group: 'Overview', actions: ['view'] },
   { key: 'clients', label: 'Clients', group: 'Records', actions: ['view', 'add', 'edit', 'delete'] },
   { key: 'customers', label: 'Customer', group: 'Records', actions: ['view', 'add', 'edit', 'delete'] },
+  { key: 'orders', label: 'Orders', group: 'Records', actions: ['view', 'add', 'edit', 'delete', 'confirm'] },
   { key: 'users', label: 'User Management', group: 'Administration', actions: ['view', 'add', 'edit', 'delete'] },
   { key: 'roles', label: 'Role Access', group: 'Administration', actions: ['view', 'edit'] },
 ]

@@ -1,6 +1,16 @@
 # GraphicSpark CRM - Project Context
 
 ## Overview
+A **spa referral business** CRM. GraphicSpark sends walk-in **customers** to
+**client** spas (companies with branches) and keeps a margin per **order**:
+  every order picks one of the client's **packages** (each has a price) -> order amount
+  auto-fills from that price, minus an optional per-order discount -> customer pays `amount` ->
+  client is paid that package's rate (a fixed Rs or a % of amount) ->
+  GraphicSpark gross = amount - client cut -> the order's **agent** (its creator)
+  gets a fixed Rs or a % of that gross -> GraphicSpark net = gross - agent cut.
+The order snapshots the package rate at creation; the split is frozen when the
+order is **confirmed** (`orders.confirm` permission).
+
 GraphicSpark's internal CRM portal. Standalone project, **completely separate** from
 BlackDrivo (D:\BlackDrivoAdmin): its own git repo, GitHub remote, Supabase project,
 and Vercel project. Do not share keys, tables, or deploy targets with BlackDrivo.
@@ -52,6 +62,10 @@ Reference source (read-only, for style only): `D:\BlackDrivoAdmin\src`.
   whitespace. `.card` is a deliberate no-op class. (This overrides BlackDrivo,
   which is card-heavy.) Modals are the only panels (they float over a backdrop).
 
+- **Modals / forms** all use `src/components/Modal.jsx`. It closes ONLY via the
+  X button or Esc - a backdrop click does nothing, so a stray click while filling
+  a form never discards input. Keep it that way for any new form/modal.
+
 - **Left sidebar: LIGHT, not dark.** White background, `border-right`, a `#E6E6E6`
   brand strip at the top holding `GSlogo.png`. Nav is split into labelled sections
   ("Records", "Administration", "Account") with 10px uppercase section labels and a
@@ -69,13 +83,19 @@ Reference source (read-only, for style only): `D:\BlackDrivoAdmin\src`.
 Auth-gated. Supabase Auth login screen -> portal. No public sign-up - internal
 users are created by an admin only.
 
-Topbar:
-- Profile icon (right) with dropdown: Profile page link, Logout.
+No topbar bar - just a floating **profile chip** at top-right: avatar +
+name + role (role hidden on mobile), chevron, and a dropdown (Profile link,
+Logout). On mobile a hamburger (top-left) opens the sidebar drawer.
+Component: `src/components/Topbar.jsx`.
 
 Left sidebar menu (grouped into sections - see UI conventions below):
 - (top)            Dashboard      - "Coming soon" placeholder for now, built later
-- Records:         Clients        - companies (B2B)
-- Records:         Customer       - walk-in customers (B2C)
+- Records:         Clients        - spa companies + their branches
+- Records:         Packages       - per-client service "menu"; each package has its own
+                    rate (fixed Rs / % of order). Rate changes are logged. Nav-gated on
+                    `clients.view`, edits on `clients.edit`.
+- Records:         Customer       - walk-in customers
+- Records:         Orders         - customer -> client referral; every order picks a package
 - Administration:  User Management - internal staff list; Super Admin / Admin can
                     CREATE users, everyone else is read-only (view the user table)
 - Administration:  Role Access    - permission matrix per role (managed by Super Admin)
@@ -93,26 +113,28 @@ no custom roles without an `ALTER TYPE`).
 The UI reads permissions (never hard-codes role checks) except the super_admin bypass.
 
 ## Permission model - page x action, role-wise + user-wise (migration 2026-08-27)
-- **Pages**: `dashboard` (view), `clients`, `customers`, `users` (view/add/edit/delete),
-  `roles` (view/edit). Catalogue: `src/lib/permissions.js` (`PERMISSION_PAGES`).
-  On the `users` page, `delete` = "deactivate".
+- **Pages**: `dashboard` (view), `clients`, `customers`, `orders`, `users`
+  (view/add/edit/delete), `roles` (view/edit). `orders` also has `confirm`.
+  Catalogue: `src/lib/permissions.js` (`PERMISSION_PAGES`).
+  On the `users` page, `delete` = "deactivate". `perm_action` enum now includes `confirm`.
 - `role_permissions (role, page, action, allowed)` - per-role defaults
 - `user_permissions (user_id, page, action, allowed)` - per-user override (wins over role)
 - `private.has_perm(page text, action perm_action)`: super_admin -> true;
   else user override, else role default, else false
 - `AuthContext.can(page, action)` is the single client gate; RLS on
-  clients/customers calls `has_perm`
+  clients/customers/orders/client_branches/client_packages calls `has_perm`.
+  Packages + the package log are gated on the `clients` page permission.
 - Role Access page: **By Role** and **By User** modes; both edit the matrix.
   Writes are super_admin-only (RLS `rp_super_admin` / `up_super_admin`).
 
-## Edge Function `admin-users` - DEPLOYED to fmfbjpblhqgrwqeswztw (v3, 2026-08-27)
+## Edge Function `admin-users` - DEPLOYED to fmfbjpblhqgrwqeswztw (v5, 2026-08-28)
 `supabase/functions/admin-users/index.ts`. The ONLY place the service_role key
 is used (Supabase injects it - no secret to configure). verify_jwt on.
 Every profile mutation for OTHER users goes through it. Actions:
-- `create`      { full_name, email, phone, role, password }  - needs `users.add`
-- `update`      { user_id, full_name?, phone?, role? }        - needs `users.edit`
-- `set_password`{ user_id, password }                         - needs `users.edit`
-- `set_active`  { user_ids[], active }                        - `users.edit` on / `users.delete` off
+- `create`      { full_name, email, phone, role, password }                - needs `users.add`
+- `update`      { user_id, full_name?, phone?, role?, commission_kind?, commission_value?, commission_active? } - `users.edit`
+- `set_password`{ user_id, password }                                      - needs `users.edit`
+- `set_active`  { user_ids[], active }                                     - `users.edit` on / `users.delete` off
 Non-super callers cannot touch `super_admin`/`admin` accounts. Client wrapper:
 `src/lib/adminUsers.js`. The user logs in with the password set at create time.
 
@@ -124,11 +146,52 @@ Non-super callers cannot touch `super_admin`/`admin` accounts. Client wrapper:
   (default privileges are now set, but only for the migration-runner role).
 
 - `profiles`         - 1:1 with auth.users; full_name, email, phone, role, avatar_url, is_active
-- `clients`          - company_name, contact_person, email, phone, address, city, status, notes, created_by
-- `customers`        - full_name, phone, email, gender, dob, address, source, notes, created_by
+- `clients`          - the company: company_name, status (active|lead|inactive), notes, created_by
+- `client_branches`  - (client_id, branch_name, city, poc_name, poc_phone, poc_email, address,
+                        is_primary)  [new 2026-08-27, `004_client_branches.sql`; clients lost
+                        contact_person/email/phone/address/city]. One primary branch per client
+                        (partial unique index). RLS follows the `clients` page permission.
+- `customers`        - ref_no (#10001+), full_name, phone, email, gender, dob, address, source, notes
+- `orders`           - ref_no (#10001+), customer_id, client_id, branch_id, agent_id,
+                        package_id + package_name (snapshot), service (legacy, auto-filled
+                        from the package name), list_amount (snapshot of the package price),
+                        discount_kind ('none'|'fixed'|'percent') + discount_value,
+                        amount (DERIVED by the snapshot trigger = list_amount - discount),
+                        status (pending|confirmed|cancelled), + frozen split
+                        (client_amount / agent_amount / company_amount) set by `confirm_order()`.
+                        [005_orders.sql, 006_client_packages.sql, 007_package_price_discount.sql]
+- `client_packages`  - (client_id, name, price, commission_kind 'fixed'|'percent',
+                        commission_value, is_active). Per-client package menu; `price` is the
+                        sticker price that auto-fills the order amount. `commission_*` = what
+                        GraphicSpark pays the client for that package (a % is charged on the
+                        DISCOUNTED amount; fixed is unaffected by discount). Partial unique
+                        index on (client_id, lower(name)) where is_active.
+                        [006_client_packages.sql, 007_package_price_discount.sql]
+- `client_package_log` - append-only; one row per rate change, written by the SECURITY DEFINER
+                        trigger `log_client_package_change()` (old/new kind+value + auth.uid()).
+- **Order <-> package snapshot**: `trg_orders_snapshot` (BEFORE INSERT/UPDATE) copies the
+  package's name + rate + price onto the order on insert or package-change *while
+  status='pending'*, derives `amount` = `list_amount - discount` (floored at 0), and copies
+  the agent's commission. So editing/deactivating a package NEVER affects existing orders,
+  and `amount` is always server-derived (the client never sends it). `confirm_order()` uses
+  the order's frozen `client_kind/value` (falls back to live client config only for legacy
+  orders with no snapshot).
+- **Where each cut is configured**: client cut -> the **package** (Packages page); agent cut
+  -> the **agent's profile** (User Management -> Edit user), with an on/off switch
+  (`commission_active`); GraphicSpark -> automatic remainder, never set by hand.
+- `profiles` carries `commission_kind` ('fixed'|'percent') + `commission_value` = the agent's
+  cut of the GS gross, plus `commission_active` (bool, default true) = an on/off switch: when
+  false, `confirm_order()` gives the agent 0 and GraphicSpark keeps the whole cut. The switch
+  is read LIVE at confirm (affects pending orders; confirmed ones stay frozen).
+  [008_agent_commission_toggle.sql]. Non-admins can't change their own commission
+  (trg_profiles_protect - role/is_active/commission_kind/value/active).
+  `clients.commission_kind/value` columns still exist but are UNUSED by the UI (superseded by
+  packages); kept only as the `confirm_order` legacy fallback.
 - `role_permissions` - (role, page, action, allowed)  [restructured 2026-08-27]
 - `user_permissions` - (user_id, page, action, allowed)  [new 2026-08-27]
-- RLS on all 5 tables. `private` helper fns (not REST-exposed):
+- `confirm_order(uuid)` - SECURITY DEFINER RPC, gated by `orders.confirm`, computes + freezes
+  the commission split. (Supabase advisor flags it as user-executable - intentional.)
+- RLS on all 10 tables. `private` helper fns (not REST-exposed):
   `is_admin()`, `current_user_role()`, `is_active_user()`, `has_perm(text, perm_action)`
 - Trigger `on_auth_user_created` auto-inserts a `profiles` row for every new auth user
 - Trigger `trg_profiles_protect` blocks role/is_active changes by a logged-in
@@ -163,10 +226,27 @@ Non-super callers cannot touch `super_admin`/`admin` accounts. Client wrapper:
 - [x] Role Access page (`src/pages/RoleAccess.jsx`) - By Role / By User matrix
 - [x] Profile page (`src/pages/Profile.jsx`) - own details + self-service password change (re-auths first)
 - [x] Customer page (`src/pages/Customers.jsx`) - View modal (-> Edit), type-DELETE confirm
-      (`src/components/ConfirmDelete.jsx`), advanced filters, CSV import (+ sample) / export.
-      Required: Name, Phone, Source. Fields: name, phone, source, email?, gender?, location area?, notes?
+      (`src/components/ConfirmDelete.jsx`), source + date filters, CSV import (+ sample) / export.
+      Fields: Name*, Contact no* (PK phone), Source*, Notes?. (email/gender/address DB columns
+      exist but are unused in the UI.)
 - [x] Reusable table kit: `src/components/data/` (DataTable, FilterBar, Pagination, BulkBar, StatCards)
-- [~] Pages still stubbed: Clients (use the same `data/` kit + `<Modal>` when built)
+- [x] Clients page (`src/pages/Clients.jsx`) - company list; View modal shows the company
+      + its branches (add/edit/delete branch inline, one primary). Add Client creates the
+      company + its primary branch in one form. Shows a Packages count column. CSV import
+      (row=branch, grouped by company) / export (flattened). No commission fields (-> Packages).
+- [x] Packages page (`src/pages/Packages.jsx`) - pick a client -> its package list; add
+      unlimited packages, each with a **price** + its own fixed Rs / % client rate + active
+      toggle. History modal per package (from `client_package_log`). Gated on `clients` perm.
+- [x] Orders page (`src/pages/Orders.jsx`) - Add order (Client -> Branch -> **Package** ->
+      Customer; creator = agent). Amount auto-fills from the package price; a per-order
+      **discount** (none / fixed Rs / %) gives the final "customer pays" amount (amount is
+      never typed by hand). A client with no active package can't get orders. View modal:
+      Confirm (orders.confirm) -> `confirm_order` RPC freezes the split and shows it; Edit /
+      Cancel while pending. `<SearchSelect>` combobox. 8 routes, all real.
+- [x] Agent commission: User (agent) edit form - an on/off checkbox ("This agent earns
+      commission on their orders") + type/value; goes through the `admin-users` EF `update`
+      action (v5, adds `commission_active`). Client-level commission removed - each package
+      carries its own rate.
 
 ## Phone numbers - Pakistani mobile only
 `src/lib/phone.js` + `src/components/PkPhoneInput.jsx`. UI shows a fixed `+92`

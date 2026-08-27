@@ -5,9 +5,11 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Users from './pages/Users'
 import Customers from './pages/Customers'
+import Clients from './pages/Clients'
+import Packages from './pages/Packages'
+import Orders from './pages/Orders'
 import RoleAccess from './pages/RoleAccess'
 import Profile from './pages/Profile'
-import ComingSoon from './pages/ComingSoon'
 
 export default function App() {
   return (
@@ -17,9 +19,11 @@ export default function App() {
       <Route element={<ProtectedRoute />}>
         <Route element={<Layout />}>
           <Route index element={<Dashboard />} />
-          <Route path="clients" element={<ComingSoon title="Clients" />} />
-          <Route path="users" element={<Users />} />
+          <Route path="clients" element={<Clients />} />
+          <Route path="packages" element={<Packages />} />
           <Route path="customers" element={<Customers />} />
+          <Route path="orders" element={<Orders />} />
+          <Route path="users" element={<Users />} />
           <Route path="profile" element={<Profile />} />
           <Route path="role-access" element={<RoleAccess />} />
         </Route>
