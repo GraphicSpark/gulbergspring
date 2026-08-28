@@ -13,9 +13,10 @@ import {
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/useAuth'
 import { fmtDate, fmtMoney } from '../lib/format'
-import { formatPkPhone } from '../lib/phone'
+import { formatPkPhone, isValidPkMobile, pkPhoneError, toStored } from '../lib/phone'
 import Modal from '../components/Modal'
 import ConfirmDelete from '../components/ConfirmDelete'
+import PkPhoneInput from '../components/PkPhoneInput'
 import SearchSelect from '../components/SearchSelect'
 import DataTable from '../components/data/DataTable'
 import FilterBar from '../components/data/FilterBar'
@@ -350,6 +351,7 @@ export default function Orders() {
         <AddOrderModal
           clients={clients}
           agentId={profile?.id}
+          canAddCustomer={can('customers', 'add')}
           onClose={() => setAddOpen(false)}
           onDone={() => {
             setAddOpen(false)
@@ -388,7 +390,7 @@ export default function Orders() {
 }
 
 // ── Add order ─────────────────────────────────────────────────────────────
-function AddOrderModal({ clients, agentId, onClose, onDone }) {
+function AddOrderModal({ clients, agentId, canAddCustomer, onClose, onDone }) {
   const [customers, setCustomers] = useState([])
   const [f, setF] = useState({
     client_id: '',
@@ -402,6 +404,51 @@ function AddOrderModal({ clients, agentId, onClose, onDone }) {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }))
+
+  // inline "new customer" mini-form
+  const [quick, setQuick] = useState(null) // null | { name, phoneLocal }
+  const [qErr, setQErr] = useState('')
+  const [qBusy, setQBusy] = useState(false)
+
+  const addQuickCustomer = async () => {
+    setQErr('')
+    const name = quick.name.trim()
+    if (!name) return setQErr('Customer name is required')
+    if (!isValidPkMobile(quick.phoneLocal)) {
+      return setQErr(pkPhoneError(quick.phoneLocal) || 'Enter a valid phone number')
+    }
+    const phone = toStored(quick.phoneLocal)
+
+    setQBusy(true)
+    // existing-customer check (phone is the natural key, not DB-enforced)
+    const { data: dupe } = await supabase
+      .from('customers')
+      .select('id, ref_no, full_name, phone')
+      .eq('phone', phone)
+      .maybeSingle()
+    if (dupe) {
+      setQBusy(false)
+      setCustomers((prev) => (prev.some((c) => c.id === dupe.id) ? prev : [...prev, dupe]))
+      set('customer_id', dupe.id)
+      setQuick(null)
+      toast(`${dupe.full_name} already has this number — selected`)
+      return
+    }
+
+    const { data, error } = await supabase
+      .from('customers')
+      .insert({ full_name: name, phone, source: 'walk-in', created_by: agentId })
+      .select('id, ref_no, full_name, phone')
+      .single()
+    setQBusy(false)
+    if (error) return setQErr(error.message)
+    setCustomers((prev) =>
+      [...prev, data].sort((a, b) => (a.full_name || '').localeCompare(b.full_name || '')),
+    )
+    set('customer_id', data.id)
+    setQuick(null)
+    toast.success('Customer added')
+  }
 
   useEffect(() => {
     supabase
@@ -518,16 +565,74 @@ function AddOrderModal({ clients, agentId, onClose, onDone }) {
 
         <div className="field">
           <label>Customer *</label>
-          <SearchSelect
-            value={f.customer_id}
-            onChange={(v) => set('customer_id', v)}
-            placeholder="Search customer…"
-            options={customers.map((c) => ({
-              value: c.id,
-              label: `${c.ref_no} · ${c.full_name}`,
-              sub: c.phone ? formatPkPhone(c.phone) : '',
-            }))}
-          />
+          <div className="ss-row">
+            <SearchSelect
+              value={f.customer_id}
+              onChange={(v) => set('customer_id', v)}
+              placeholder="Search customer…"
+              options={customers.map((c) => ({
+                value: c.id,
+                label: `${c.ref_no} · ${c.full_name}`,
+                sub: c.phone ? formatPkPhone(c.phone) : '',
+              }))}
+            />
+            {canAddCustomer && (
+              <button
+                type="button"
+                className="icon-btn"
+                title="New customer"
+                onClick={() =>
+                  setQuick((q) => (q ? null : { name: '', phoneLocal: '' }))
+                }
+              >
+                <Plus size={16} />
+              </button>
+            )}
+          </div>
+
+          {quick && (
+            <div className="quick-add">
+              <div className="field-row">
+                <div className="field">
+                  <label>Customer name</label>
+                  <input
+                    className="input"
+                    autoFocus
+                    value={quick.name}
+                    onChange={(e) => setQuick((q) => ({ ...q, name: e.target.value }))}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        addQuickCustomer()
+                      }
+                    }}
+                  />
+                </div>
+                <div className="field">
+                  <label>Phone number</label>
+                  <PkPhoneInput
+                    value={quick.phoneLocal}
+                    onChange={(v) => setQuick((q) => ({ ...q, phoneLocal: v }))}
+                    invalid={Boolean(quick.phoneLocal) && !isValidPkMobile(quick.phoneLocal)}
+                  />
+                </div>
+              </div>
+              {qErr && <span className="field-error">{qErr}</span>}
+              <div className="modal-actions">
+                <button type="button" className="btn btn-ghost btn-square" onClick={() => setQuick(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-square"
+                  onClick={addQuickCustomer}
+                  disabled={qBusy}
+                >
+                  {qBusy ? 'Adding…' : 'Add customer'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {f.package_id && (
@@ -595,7 +700,7 @@ function OrderDetailModal({ order, canEdit, canConfirm, clients, onClose, onChan
   const isPending = order.status === 'pending'
 
   const confirm = async () => {
-    if (!window.confirm('Confirm that the customer availed this service? Commission will be locked.')) return
+    if (!window.confirm('Confirm that the customer availed this service? This cannot be undone.')) return
     setBusy(true)
     const { error } = await supabase.rpc('confirm_order', { p_order_id: order.id })
     setBusy(false)
@@ -655,33 +760,10 @@ function OrderDetailModal({ order, canEdit, canConfirm, clients, onClose, onChan
         <Row label="Agent" value={order.agent?.full_name} />
         <Row label="Notes" value={order.notes} />
         <Row label="Created" value={fmtDate(order.created_at)} />
+        {order.status === 'confirmed' && (
+          <Row label="Confirmed" value={fmtDate(order.confirmed_at)} />
+        )}
       </div>
-
-      {order.status === 'confirmed' && (
-        <div className="split-box">
-          <div className="split-title">Commission split (locked {fmtDate(order.confirmed_at)})</div>
-          <div className="split-row"><span>Customer paid</span><b>{fmtMoney(order.amount)}</b></div>
-          <div className="split-row">
-            <span>
-              Client gets{order.package_name ? ` — ${order.package_name}` : ''}{' '}
-              {order.client_kind === 'percent' ? `(${order.client_value}%)` : '(fixed)'}
-            </span>
-            <b>{fmtMoney(order.client_amount)}</b>
-          </div>
-          <div className="split-row">
-            <span>
-              Agent {order.agent?.full_name ? `(${order.agent.full_name})` : ''}{' '}
-              {order.agent_kind == null
-                ? '— commission off'
-                : order.agent_kind === 'percent'
-                  ? `${order.agent_value}%`
-                  : 'fixed'}
-            </span>
-            <b>{fmtMoney(order.agent_amount)}</b>
-          </div>
-          <div className="split-row total"><span>GraphicSpark net</span><b>{fmtMoney(order.company_amount)}</b></div>
-        </div>
-      )}
 
       <div className="modal-actions">
         <button type="button" className="btn btn-ghost btn-square" onClick={onClose}>
