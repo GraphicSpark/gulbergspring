@@ -276,7 +276,7 @@ export default function Clients() {
   }
 
   const columns = [
-    { key: 'ref', header: 'ID', render: (c) => `#${c.ref_no}` },
+    { key: 'ref', header: 'ID', render: (c) => c.ref_no },
     { key: 'name', header: 'Client name', render: (c) => <span className="primary">{c.company_name}</span> },
     {
       key: 'branches',
@@ -740,7 +740,7 @@ function ClientDetailModal({ client, canEdit, canAdd, canDelete, onClose, onChan
 
   // main info view
   return (
-    <Modal open onClose={onClose} title={`#${client.ref_no} · ${client.company_name}`} width={520}>
+    <Modal open onClose={onClose} title={`${client.ref_no} · ${client.company_name}`} width={520}>
       <div className="view-row">
         <span className="view-label">Status</span>
         <span className="view-value">{cap(client.status)}</span>

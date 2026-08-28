@@ -151,8 +151,13 @@ Non-super callers cannot touch `super_admin`/`admin` accounts. Client wrapper:
                         is_primary)  [new 2026-08-27, `004_client_branches.sql`; clients lost
                         contact_person/email/phone/address/city]. One primary branch per client
                         (partial unique index). RLS follows the `clients` page permission.
-- `customers`        - ref_no (#10001+), full_name, phone, email, gender, dob, address, source, notes
-- `orders`           - ref_no (#10001+), customer_id, client_id, branch_id, agent_id,
+- **Display IDs**: ONE shared sequence `public.ref_no_seq` (starts 1001) feeds `ref_no bigint`
+  on customers / clients / orders / client_packages - the next record created gets the next
+  number, regardless of type (order 1004 -> package 1005 -> client 1006). ref_no is
+  display-only (no FK uses it), shown as a plain number with no leading '#'.
+  [010_shared_ref_no_sequence.sql, replaced the per-table identity sequences]
+- `customers`        - ref_no, full_name, phone, email, gender, dob, address, source, notes
+- `orders`           - ref_no, customer_id, client_id, branch_id, agent_id,
                         package_id + package_name (snapshot), service (legacy, auto-filled
                         from the package name), list_amount (snapshot of the package price),
                         discount_kind ('none'|'fixed'|'percent') + discount_value,
@@ -160,7 +165,7 @@ Non-super callers cannot touch `super_admin`/`admin` accounts. Client wrapper:
                         status (pending|confirmed|cancelled), + frozen split
                         (client_amount / agent_amount / company_amount) set by `confirm_order()`.
                         [005_orders.sql, 006_client_packages.sql, 007_package_price_discount.sql]
-- `client_packages`  - (client_id, name, price, commission_kind 'fixed'|'percent',
+- `client_packages`  - ref_no, (client_id, name, price, commission_kind 'fixed'|'percent',
                         commission_value, is_active). Per-client package menu; `price` is the
                         sticker price that auto-fills the order amount. `commission_*` = what
                         GraphicSpark pays the client for that package (a % is charged on the

@@ -67,6 +67,7 @@ export default function Packages() {
 
   const columns = useMemo(
     () => [
+      { key: 'ref', header: 'ID', render: (p) => p.ref_no },
       { key: 'name', header: 'Package', render: (p) => <span className="primary">{p.name}</span> },
       { key: 'price', header: 'Price', render: (p) => fmtMoney(p.price) },
       { key: 'rate', header: 'Client gets', render: (p) => rateText(p.commission_kind, p.commission_value) },
@@ -147,7 +148,7 @@ export default function Packages() {
           value={clientId}
           onChange={setClientId}
           placeholder="Pick a client…"
-          options={clients.map((c) => ({ value: c.id, label: `#${c.ref_no} · ${c.company_name}` }))}
+          options={clients.map((c) => ({ value: c.id, label: `${c.ref_no} · ${c.company_name}` }))}
         />
       </div>
 

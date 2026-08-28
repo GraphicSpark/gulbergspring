@@ -121,7 +121,7 @@ export default function Orders() {
       if (from && o.created_at < from) return false
       if (to && o.created_at > `${to}T23:59:59`) return false
       if (q) {
-        const hay = `#${o.ref_no} ${o.customer?.full_name ?? ''} ${o.customer?.phone ?? ''} ${o.client?.company_name ?? ''} ${o.package_name ?? o.service ?? ''}`.toLowerCase()
+        const hay = `${o.ref_no} ${o.customer?.full_name ?? ''} ${o.customer?.phone ?? ''} ${o.client?.company_name ?? ''} ${o.package_name ?? o.service ?? ''}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       return true
@@ -195,14 +195,14 @@ export default function Orders() {
   }
 
   const columns = [
-    { key: 'ref', header: 'ID', render: (o) => `#${o.ref_no}` },
+    { key: 'ref', header: 'ID', render: (o) => o.ref_no },
     {
       key: 'customer',
       header: 'Customer',
       render: (o) => (
         <div className="stack">
           <span className="primary">{o.customer?.full_name ?? '—'}</span>
-          <span className="secondary">#{o.customer?.ref_no}</span>
+          <span className="secondary">{o.customer?.ref_no}</span>
         </div>
       ),
     },
@@ -376,7 +376,7 @@ export default function Orders() {
           message={
             del.kind === 'bulk'
               ? `This permanently deletes ${del.ids.size} order(s).`
-              : `This permanently deletes order #${del.row.ref_no}.`
+              : `This permanently deletes order ${del.row.ref_no}.`
           }
           busy={delBusy}
           onConfirm={doDelete}
@@ -470,7 +470,7 @@ function AddOrderModal({ clients, agentId, onClose, onDone }) {
             value={f.client_id}
             onChange={pickClient}
             placeholder="Pick a client…"
-            options={clients.map((c) => ({ value: c.id, label: `#${c.ref_no} · ${c.company_name}` }))}
+            options={clients.map((c) => ({ value: c.id, label: `${c.ref_no} · ${c.company_name}` }))}
           />
         </div>
 
@@ -524,7 +524,7 @@ function AddOrderModal({ clients, agentId, onClose, onDone }) {
             placeholder="Search customer…"
             options={customers.map((c) => ({
               value: c.id,
-              label: `#${c.ref_no} · ${c.full_name}`,
+              label: `${c.ref_no} · ${c.full_name}`,
               sub: c.phone ? formatPkPhone(c.phone) : '',
             }))}
           />
@@ -600,7 +600,7 @@ function OrderDetailModal({ order, canEdit, canConfirm, clients, onClose, onChan
     const { error } = await supabase.rpc('confirm_order', { p_order_id: order.id })
     setBusy(false)
     if (error) return toast.error(error.message)
-    toast.success(`Order #${order.ref_no} confirmed`)
+    toast.success(`Order ${order.ref_no} confirmed`)
     onChanged()
   }
 
@@ -629,11 +629,11 @@ function OrderDetailModal({ order, canEdit, canConfirm, clients, onClose, onChan
   }
 
   return (
-    <Modal open onClose={onClose} title={`Order #${order.ref_no}`} width={480}>
+    <Modal open onClose={onClose} title={`Order ${order.ref_no}`} width={480}>
       <div>
         <Row label="Status" value={<span className={`status-text ${statusClass(order.status)}`}>{cap(order.status)}</span>} />
-        <Row label="Customer" value={`#${order.customer?.ref_no} · ${order.customer?.full_name ?? '—'}`} />
-        <Row label="Client" value={`#${order.client?.ref_no} · ${order.client?.company_name ?? '—'}`} />
+        <Row label="Customer" value={`${order.customer?.ref_no} · ${order.customer?.full_name ?? '—'}`} />
+        <Row label="Client" value={`${order.client?.ref_no} · ${order.client?.company_name ?? '—'}`} />
         <Row label="Branch" value={order.branch ? `${order.branch.branch_name} · ${order.branch.city}` : '—'} />
         <Row label="Package" value={order.package_name || order.service} />
         {order.list_amount != null && order.discount_kind && order.discount_kind !== 'none' ? (
@@ -806,7 +806,7 @@ function EditOrderModal({ order, clients, onCancel, onDone }) {
   }
 
   return (
-    <Modal open onClose={onCancel} title={`Edit order #${order.ref_no}`} width={520}>
+    <Modal open onClose={onCancel} title={`Edit order ${order.ref_no}`} width={520}>
       <form className="modal-form" onSubmit={submit}>
         {err && <div className="modal-error">{err}</div>}
         <div className="field">
@@ -814,7 +814,7 @@ function EditOrderModal({ order, clients, onCancel, onDone }) {
           <SearchSelect
             value={f.client_id}
             onChange={pickClient}
-            options={clients.map((c) => ({ value: c.id, label: `#${c.ref_no} · ${c.company_name}` }))}
+            options={clients.map((c) => ({ value: c.id, label: `${c.ref_no} · ${c.company_name}` }))}
           />
         </div>
         <div className="field">
@@ -833,7 +833,7 @@ function EditOrderModal({ order, clients, onCancel, onDone }) {
             onChange={(v) => set('customer_id', v)}
             options={customers.map((c) => ({
               value: c.id,
-              label: `#${c.ref_no} · ${c.full_name}`,
+              label: `${c.ref_no} · ${c.full_name}`,
               sub: c.phone ? formatPkPhone(c.phone) : '',
             }))}
           />

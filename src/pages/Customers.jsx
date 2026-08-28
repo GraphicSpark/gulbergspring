@@ -186,7 +186,7 @@ export default function Customers() {
   }
 
   const columns = [
-    { key: 'ref', header: 'ID', render: (c) => `#${c.ref_no}` },
+    { key: 'ref', header: 'ID', render: (c) => c.ref_no },
     {
       key: 'name',
       header: 'Name',
@@ -444,7 +444,7 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, onClose, on
     return (
       <Modal open onClose={onClose} title={title} width={460}>
         <div>
-          <ViewRow label="Customer ID" value={`#${row.ref_no}`} />
+          <ViewRow label="Customer ID" value={row.ref_no} />
           <ViewRow label="Customer name" value={row.full_name} />
           <ViewRow label="Contact no" value={formatPkPhone(row.phone)} />
           <ViewRow label="Source" value={cap(row.source)} />
