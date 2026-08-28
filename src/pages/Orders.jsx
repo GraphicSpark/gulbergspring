@@ -95,7 +95,7 @@ export default function Orders() {
       supabase
         .from('clients')
         .select(
-          'id, ref_no, company_name, client_branches(id, branch_name, city, is_primary), client_packages(id, name, commission_kind, commission_value, is_active)',
+          'id, ref_no, company_name, client_branches(id, branch_name, city, is_primary), client_packages(id, name, price, commission_kind, commission_value, is_active)',
         )
         .order('company_name'),
     ])
