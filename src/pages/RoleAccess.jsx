@@ -1,19 +1,13 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
-import { Check, RotateCcw, Save, Search, Shield, User, Users, X } from 'lucide-react'
+import { Check, Pencil, Plus, RotateCcw, Save, Search, Shield, Trash2, User, Users, X } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/useAuth'
-import {
-  MANAGED_ROLES,
-  PERMISSION_GROUPS,
-  PERMISSION_PAGES,
-  PERM_ACTIONS,
-  ROLE_LABELS,
-} from '../lib/permissions'
+import { PERMISSION_GROUPS, PERMISSION_PAGES, PERM_ACTIONS } from '../lib/permissions'
+import { createRole, deleteRole, fetchRoles, renameRole, roleLabel } from '../lib/roles'
 import Avatar from '../components/Avatar'
+import Modal from '../components/Modal'
 import './RoleAccess.css'
-
-const ROLES = ['super_admin', ...MANAGED_ROLES]
 
 export default function RoleAccess() {
   const { isSuperAdmin, can } = useAuth()
@@ -23,27 +17,42 @@ export default function RoleAccess() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
+  const [roleList, setRoleList] = useState([]) // [{ key, label, is_system, sort }]
+  const [roleUsage, setRoleUsage] = useState({}) // { [key]: user count }
   const [rolePerms, setRolePerms] = useState({}) // { role: { page: { action: bool } } }
-  const [activeRole, setActiveRole] = useState('admin')
+  const [activeRole, setActiveRole] = useState(null)
+  const [roleModal, setRoleModal] = useState(null) // null | { mode:'new' } | { mode:'rename', role }
 
   const [users, setUsers] = useState([])
   const [userSearch, setUserSearch] = useState('')
   const [activeUserId, setActiveUserId] = useState(null)
+  const [activeUserRoles, setActiveUserRoles] = useState([]) // string[]
   const [overrides, setOverrides] = useState({}) // { page: { action: bool } } (draft)
 
-  const fetchRolePerms = useCallback(async () => {
-    const { data } = await supabase.from('role_permissions').select('role, page, action, allowed')
+  const label = useCallback((key) => roleLabel(roleList, key), [roleList])
+
+  const fetchAll = useCallback(async () => {
+    const [rolesRes, permsRes, usageRes] = await Promise.all([
+      fetchRoles().catch(() => []),
+      supabase.from('role_permissions').select('role, page, action, allowed'),
+      supabase.from('user_roles').select('role'),
+    ])
+    setRoleList(rolesRes)
     const map = {}
-    for (const r of data ?? []) {
+    for (const r of permsRes.data ?? []) {
       ;((map[r.role] ??= {})[r.page] ??= {})[r.action] = r.allowed
     }
     setRolePerms(map)
+    const usage = {}
+    for (const r of usageRes.data ?? []) usage[r.role] = (usage[r.role] ?? 0) + 1
+    setRoleUsage(usage)
+    setActiveRole((cur) => cur ?? rolesRes.find((r) => r.key !== 'super_admin')?.key ?? 'admin')
     setLoading(false)
   }, [])
 
   useEffect(() => {
-    fetchRolePerms()
-  }, [fetchRolePerms])
+    fetchAll()
+  }, [fetchAll])
 
   useEffect(() => {
     if (mode !== 'users' || users.length) return
@@ -58,19 +67,20 @@ export default function RoleAccess() {
 
   useEffect(() => {
     if (!activeUserId) return
-    supabase
-      .from('user_permissions')
-      .select('page, action, allowed')
-      .eq('user_id', activeUserId)
-      .then(({ data }) => {
-        const map = {}
-        for (const r of data ?? []) (map[r.page] ??= {})[r.action] = r.allowed
-        setOverrides(map)
-      })
+    Promise.all([
+      supabase.from('user_permissions').select('page, action, allowed').eq('user_id', activeUserId),
+      supabase.from('user_roles').select('role').eq('user_id', activeUserId),
+    ]).then(([permRes, roleRes]) => {
+      const map = {}
+      for (const r of permRes.data ?? []) (map[r.page] ??= {})[r.action] = r.allowed
+      setOverrides(map)
+      setActiveUserRoles((roleRes.data ?? []).map((r) => r.role))
+    })
   }, [activeUserId])
 
   const selectUser = (id) => {
     setOverrides({})
+    setActiveUserRoles([])
     setActiveUserId(id)
   }
 
@@ -131,12 +141,49 @@ export default function RoleAccess() {
       .upsert(rows, { onConflict: 'role,page,action' })
     setSaving(false)
     if (error) return toast.error(error.message)
-    toast.success(`${ROLE_LABELS[activeRole]} permissions saved`)
+    toast.success(`${label(activeRole)} permissions saved`)
+  }
+
+  // ── role CRUD ──────────────────────────────────────────────────────────
+  const submitRoleModal = async (text) => {
+    try {
+      if (roleModal.mode === 'new') {
+        const key = await createRole(text)
+        toast.success(`Role "${text.trim()}" added`)
+        setRoleModal(null)
+        await fetchAll()
+        setActiveRole(key)
+      } else {
+        await renameRole(roleModal.role.key, text)
+        toast.success('Role renamed')
+        setRoleModal(null)
+        await fetchAll()
+      }
+    } catch (e) {
+      toast.error(e.message)
+    }
+  }
+
+  const removeRole = async (role) => {
+    const used = roleUsage[role.key] ?? 0
+    const msg = used
+      ? `Delete "${role.label}"? It is assigned to ${used} user(s) — they will lose whatever only this role granted.`
+      : `Delete "${role.label}"?`
+    if (!window.confirm(msg)) return
+    try {
+      await deleteRole(role.key)
+      toast.success('Role deleted')
+      if (activeRole === role.key) setActiveRole(null)
+      await fetchAll()
+    } catch (e) {
+      toast.error(e.message)
+    }
   }
 
   // ── user mode ──────────────────────────────────────────────────────────
+  // role default = the UNION of every role this user holds
   const roleDefault = (page, action) =>
-    activeUser ? rolePerms[activeUser.role]?.[page]?.[action] === true : false
+    activeUserRoles.some((r) => rolePerms[r]?.[page]?.[action] === true)
   const isOverridden = (page, action) => overrides[page]?.[action] !== undefined
   const effective = (page, action) =>
     isOverridden(page, action) ? overrides[page][action] : roleDefault(page, action)
@@ -185,9 +232,9 @@ export default function RoleAccess() {
   }
 
   // ── shared grid ────────────────────────────────────────────────────────
+  const userIsSuper = activeUserRoles.includes('super_admin') || activeUser?.role === 'super_admin'
   const readOnly =
-    !isSuperAdmin ||
-    (mode === 'roles' ? activeRole === 'super_admin' : activeUser?.role === 'super_admin')
+    !isSuperAdmin || (mode === 'roles' ? activeRole === 'super_admin' : userIsSuper)
 
   const getVal = (page, action) =>
     mode === 'roles' ? roleVal(page, action) : effective(page, action)
@@ -300,6 +347,8 @@ export default function RoleAccess() {
     )
   }
 
+  const activeRoleRow = roleList.find((r) => r.key === activeRole)
+
   return (
     <div className="page">
       <div className="page-header">
@@ -307,8 +356,8 @@ export default function RoleAccess() {
           <h1 className="page-title">Role Access</h1>
           <p className="page-subtitle">
             {mode === 'roles'
-              ? 'Default access for each role'
-              : 'Override one person without changing their role'}
+              ? 'Default access for each role — a user gets the union of every role they hold'
+              : 'Override one person without changing their roles'}
           </p>
         </div>
         <div className="page-actions">
@@ -330,25 +379,38 @@ export default function RoleAccess() {
         {mode === 'roles' ? (
           <div className="ra-list">
             <div className="ra-list-head">Roles</div>
-            {ROLES.map((role) => {
-              const count = Object.values(rolePerms[role] ?? {}).filter((p) => p?.view).length
+            {roleList.map((role) => {
+              const count = Object.values(rolePerms[role.key] ?? {}).filter((p) => p?.view).length
               return (
                 <button
-                  key={role}
-                  className={`ra-list-item${activeRole === role ? ' on' : ''}`}
-                  onClick={() => setActiveRole(role)}
+                  key={role.key}
+                  className={`ra-list-item${activeRole === role.key ? ' on' : ''}`}
+                  onClick={() => setActiveRole(role.key)}
                 >
                   <span className="ra-name">
-                    {ROLE_LABELS[role]}
+                    {role.label}
                     <span className="ra-sub">
                       {' '}
-                      · {role === 'super_admin' ? 'all pages' : `${count}/${PERMISSION_PAGES.length} pages`}
+                      ·{' '}
+                      {role.key === 'super_admin'
+                        ? 'all pages'
+                        : `${count}/${PERMISSION_PAGES.length} pages`}
+                      {!role.is_system && ' · custom'}
                     </span>
                   </span>
-                  {activeRole === role && <Shield size={13} color="var(--accent)" />}
+                  {activeRole === role.key && <Shield size={13} color="var(--accent)" />}
                 </button>
               )
             })}
+            {isSuperAdmin && (
+              <button
+                className="ra-list-item ra-add-role"
+                onClick={() => setRoleModal({ mode: 'new' })}
+              >
+                <Plus size={14} />
+                <span className="ra-name">New role</span>
+              </button>
+            )}
           </div>
         ) : (
           <div className="ra-list">
@@ -373,7 +435,7 @@ export default function RoleAccess() {
                   <Avatar name={u.full_name} email={u.email} url={u.avatar_url} size={26} />
                   <span className="ra-name">
                     {u.full_name || u.email}
-                    <span className="ra-sub"> · {ROLE_LABELS[u.role] ?? u.role}</span>
+                    <span className="ra-sub"> · {label(u.role)}</span>
                   </span>
                 </button>
               ))}
@@ -390,7 +452,7 @@ export default function RoleAccess() {
             <div>
               <h3>
                 {mode === 'roles'
-                  ? `${ROLE_LABELS[activeRole]} permissions`
+                  ? `${label(activeRole)} permissions`
                   : activeUser
                     ? `${activeUser.full_name || activeUser.email}`
                     : 'Select a user'}
@@ -399,31 +461,54 @@ export default function RoleAccess() {
                 {mode === 'roles'
                   ? 'Click a column header to toggle all · click the row dot for the whole page'
                   : activeUser
-                    ? `Role: ${ROLE_LABELS[activeUser.role] ?? activeUser.role}${
-                        overrideCount ? ` · ${overrideCount} custom` : ''
-                      }`
+                    ? `Roles: ${
+                        (activeUserRoles.length ? activeUserRoles : [activeUser.role])
+                          .map(label)
+                          .join(', ') || '—'
+                      }${overrideCount ? ` · ${overrideCount} custom` : ''}`
                     : 'Pick someone on the left'}
               </div>
             </div>
-            {!readOnly && (mode === 'roles' || activeUser) && (
-              <div style={{ display: 'flex', gap: 8 }}>
-                {mode === 'users' && overrideCount > 0 && (
-                  <button
-                    className="btn btn-ghost btn-square btn-sm"
-                    onClick={() => setOverrides({})}
-                  >
-                    <RotateCcw size={13} /> Reset all
-                  </button>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {mode === 'roles' &&
+                isSuperAdmin &&
+                activeRoleRow &&
+                !activeRoleRow.is_system && (
+                  <>
+                    <button
+                      className="btn btn-ghost btn-square btn-sm"
+                      onClick={() => setRoleModal({ mode: 'rename', role: activeRoleRow })}
+                    >
+                      <Pencil size={13} /> Rename
+                    </button>
+                    <button
+                      className="btn btn-ghost btn-square btn-sm"
+                      onClick={() => removeRole(activeRoleRow)}
+                    >
+                      <Trash2 size={13} /> Delete
+                    </button>
+                  </>
                 )}
-                <button
-                  className="btn btn-square btn-sm"
-                  onClick={mode === 'roles' ? saveRole : saveOverrides}
-                  disabled={saving}
-                >
-                  <Save size={13} /> {saving ? 'Saving…' : 'Save'}
-                </button>
-              </div>
-            )}
+              {!readOnly && (mode === 'roles' || activeUser) && (
+                <>
+                  {mode === 'users' && overrideCount > 0 && (
+                    <button
+                      className="btn btn-ghost btn-square btn-sm"
+                      onClick={() => setOverrides({})}
+                    >
+                      <RotateCcw size={13} /> Reset all
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-square btn-sm"
+                    onClick={mode === 'roles' ? saveRole : saveOverrides}
+                    disabled={saving}
+                  >
+                    <Save size={13} /> {saving ? 'Saving…' : 'Save'}
+                  </button>
+                </>
+              )}
+            </div>
           </div>
 
           {mode === 'roles' && activeRole === 'super_admin' && (
@@ -431,7 +516,7 @@ export default function RoleAccess() {
               <Shield size={13} /> Super Admin always has full access.
             </div>
           )}
-          {mode === 'users' && activeUser?.role === 'super_admin' && (
+          {mode === 'users' && userIsSuper && (
             <div className="ra-note">
               <Shield size={13} /> Super Admins always have full access — overrides don&rsquo;t apply.
             </div>
@@ -448,6 +533,64 @@ export default function RoleAccess() {
           )}
         </div>
       </div>
+
+      {roleModal && (
+        <RoleNameModal
+          mode={roleModal.mode}
+          initial={roleModal.mode === 'rename' ? roleModal.role.label : ''}
+          onClose={() => setRoleModal(null)}
+          onSubmit={submitRoleModal}
+        />
+      )}
     </div>
+  )
+}
+
+function RoleNameModal({ mode, initial, onClose, onSubmit }) {
+  const [text, setText] = useState(initial)
+  const [busy, setBusy] = useState(false)
+  const key = text
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!text.trim()) return
+    setBusy(true)
+    await onSubmit(text)
+    setBusy(false)
+  }
+
+  return (
+    <Modal open onClose={onClose} title={mode === 'new' ? 'New role' : 'Rename role'} width={400}>
+      <form className="modal-form" onSubmit={submit}>
+        <div className="field">
+          <label htmlFor="role-name">Role name</label>
+          <input
+            id="role-name"
+            className="input"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="e.g. Finance"
+            autoFocus
+          />
+          {mode === 'new' && key && (
+            <span className="field-hint">
+              key: <code>{key}</code>
+            </span>
+          )}
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="btn btn-ghost btn-square" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="btn btn-square" disabled={busy || !text.trim()}>
+            {busy ? 'Saving…' : mode === 'new' ? 'Add role' : 'Save'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }

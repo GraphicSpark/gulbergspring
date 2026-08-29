@@ -3,7 +3,7 @@ import toast from 'react-hot-toast'
 import { KeyRound, UserRound } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/useAuth'
-import { ROLE_LABELS } from '../lib/permissions'
+import { ROLE_LABEL_FALLBACK } from '../lib/permissions'
 import Avatar from '../components/Avatar'
 import './Profile.css'
 
@@ -69,7 +69,7 @@ function DetailsCard({ profile, onSaved }) {
         <div>
           <div className="profile-section-title">Account details</div>
           <span className={`role-badge ${profile.role}`}>
-            {ROLE_LABELS[profile.role] ?? profile.role}
+            {ROLE_LABEL_FALLBACK[profile.role] ?? profile.role}
           </span>
         </div>
       </div>

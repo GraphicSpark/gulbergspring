@@ -313,6 +313,29 @@ svg {
 .role-badge.agent { background: rgba(30, 135, 75, 0.12); color: var(--success); }
 .role-badge.ops { background: rgba(183, 121, 31, 0.14); color: var(--warning); }
 
+.role-badge-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.role-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 6px 10px;
+}
+.role-picker-tag {
+  margin-left: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: #8b5cf6;
+}
+
 .stack {
   display: flex;
   flex-direction: column;

@@ -9,11 +9,13 @@ import { AuthContext } from './auth-context'
  * `can(page, action)` is the single gate the UI uses:
  *   - super_admin  -> always allowed
  *   - inactive     -> never allowed
- *   - otherwise    -> user override (if any) else role default else denied
+ *   - otherwise    -> user override (if any) else the UNION of every role the
+ *                     user holds (user_roles) else denied
  */
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
+  const [roles, setRoles] = useState([]) // string[] - every role the user holds
   const [permissions, setPermissions] = useState({}) // { [page]: { [action]: bool } }
   const [loading, setLoading] = useState(true)
 
@@ -26,6 +28,7 @@ export function AuthProvider({ children }) {
 
     if (error || !prof) {
       setProfile(null)
+      setRoles([])
       setPermissions({})
       // A real error here (expired/rotated token, missing profile row) means the
       // session is unusable - clear it so the user lands on a clean login rather
@@ -34,21 +37,33 @@ export function AuthProvider({ children }) {
       return
     }
 
+    const { data: roleRowsRaw } = await supabase
+      .from('user_roles')
+      .select('role')
+      .eq('user_id', userId)
+    const userRoles = (roleRowsRaw ?? []).map((r) => r.role)
+    if (userRoles.length === 0 && prof.role) userRoles.push(prof.role)
+
     const merged = {}
     if (prof.is_active && prof.role !== 'super_admin') {
       const [{ data: roleRows }, { data: userRows }] = await Promise.all([
-        supabase.from('role_permissions').select('page, action, allowed').eq('role', prof.role),
+        supabase
+          .from('role_permissions')
+          .select('page, action, allowed')
+          .in('role', userRoles.length ? userRoles : ['__none__']),
         supabase.from('user_permissions').select('page, action, allowed').eq('user_id', userId),
       ])
       for (const r of roleRows ?? []) {
-        ;(merged[r.page] ??= {})[r.action] = r.allowed
+        const cur = merged[r.page]?.[r.action]
+        ;(merged[r.page] ??= {})[r.action] = cur === true ? true : r.allowed // union across roles
       }
       for (const r of userRows ?? []) {
-        ;(merged[r.page] ??= {})[r.action] = r.allowed // override wins
+        ;(merged[r.page] ??= {})[r.action] = r.allowed // per-user override wins outright
       }
     }
 
     setProfile(prof)
+    setRoles(userRoles)
     setPermissions(merged)
   }, [])
 
@@ -72,6 +87,7 @@ export function AuthProvider({ children }) {
         }, 0)
       } else {
         setProfile(null)
+        setRoles([])
         setPermissions({})
       }
     })
@@ -91,27 +107,28 @@ export function AuthProvider({ children }) {
   const can = useCallback(
     (page, action = 'view') => {
       if (!profile || !profile.is_active) return false
-      if (profile.role === 'super_admin') return true
+      if (profile.role === 'super_admin' || roles.includes('super_admin')) return true
       return permissions[page]?.[action] === true
     },
-    [profile, permissions],
+    [profile, roles, permissions],
   )
 
   const value = useMemo(
     () => ({
       session,
       profile,
+      roles,
       permissions,
       loading,
       isAuthenticated: Boolean(session),
       isActive: Boolean(profile?.is_active),
-      isSuperAdmin: profile?.role === 'super_admin',
+      isSuperAdmin: profile?.role === 'super_admin' || roles.includes('super_admin'),
       can,
       signIn,
       signOut,
       reloadProfile: () => (session ? loadProfile(session.user.id) : undefined),
     }),
-    [session, profile, permissions, loading, can, signIn, signOut, loadProfile],
+    [session, profile, roles, permissions, loading, can, signIn, signOut, loadProfile],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

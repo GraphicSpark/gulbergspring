@@ -94,7 +94,7 @@
 
 .sidebar-nav a:hover {
   color: var(--accent);
-  background: var(--surface);
+  text-decoration: none;
 }
 
 .sidebar-nav a:hover svg {
@@ -259,8 +259,8 @@
 
 .dropdown button:hover,
 .dropdown a:hover {
-  background: var(--surface);
-  color: var(--heading);
+  color: var(--accent);
+  text-decoration: none;
 }
 
 .dropdown .danger {
@@ -268,8 +268,8 @@
 }
 
 .dropdown .danger:hover {
-  background: var(--danger-soft);
   color: var(--danger);
+  text-decoration: none;
 }
 
 /* ---------- content ---------- */

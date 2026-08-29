@@ -147,19 +147,33 @@ Left sidebar menu (grouped into sections - see UI conventions below):
                     (sales/client/gsGross/discount/gsNet/agent/net) + `addTotals`.
 - Administration:  User Management - internal staff list; Super Admin / Admin can
                     CREATE users, everyone else is read-only (view the user table)
-- Administration:  Role Access    - permission matrix per role (managed by Super Admin)
+- Administration:  Role Access    - permission matrix per role + custom-role CRUD
+                    (**+ New role**, rename, delete on non-system rows). By Role / By User
+                    modes. Managed by Super Admin only. `src/lib/roles.js` = fetch/CRUD.
 - Account:         Profile        - separate page; the logged-in user edits their own info
 
 Each item is permission-gated: hidden unless the user has the matching `*.view`
 permission (Role Access is super_admin only; Dashboard/Profile always shown).
 
-## Roles
-`super_admin`, `admin`, `agent`, `ops` (fixed - `user_role` is a Postgres enum,
-no custom roles without an `ALTER TYPE`).
-- Super Admin: everything, bypasses every permission check
-- Admin: `is_admin()` in RLS; broad defaults incl. user management
-- Agent / Ops: whatever the Role Access matrix grants
+## Roles  (custom roles + multi-role - migration `020_custom_roles_multi_role.sql`)
+- `public.roles (key, label, is_system, sort)` - 4 system rows (`super_admin`, `admin`,
+  `agent`, `ops`, `is_system=true`, protected by `trg_roles_protect`) + any custom rows
+  a Super Admin adds on the Role Access page. `user_role` enum still exists (it types
+  `profiles.role`) but is no longer the source of truth for permissions.
+- `public.user_roles (user_id, role)` - **a user can hold several roles** and gets the
+  **UNION** of everything any of them grants. `role_permissions.role` is now `text` ->
+  `roles.key` (`on delete cascade`, same for `user_roles`).
+- `profiles.role` = a **derived "primary" tier** (the most-privileged *system* role the
+  user holds, else `agent`), kept in sync by `trg_user_roles_sync` (`sync_primary_role()`,
+  AFTER INSERT/DELETE on `user_roles`). It drives `current_user_role()` / `is_admin()` /
+  the super-admin bypass and every existing policy - so those needed **no change**.
+- Custom roles only ever grant explicit page x action perms; the `is_admin()` RLS bypass
+  stays tied to the built-in `admin` / `super_admin` only.
+- Super Admin: everything, bypasses every permission check.
+- Admin: `is_admin()` in RLS; broad defaults incl. user management.
+- Everyone else: the union of their roles' Role Access grants (+ per-user overrides).
 The UI reads permissions (never hard-codes role checks) except the super_admin bypass.
+`AuthContext` exposes `roles` (string[]) alongside `profile`.
 
 ## Permission model - page x action, role-wise + user-wise (migration 2026-08-27)
 - **Pages**: `dashboard` (view), `clients`, `packages`, `customers`, `orders`, `accounts`,
@@ -167,30 +181,36 @@ The UI reads permissions (never hard-codes role checks) except the super_admin b
   `finance` add/edit/delete gate the Payouts page only (the ledgers are view-only).
   Catalogue: `src/lib/permissions.js` (`PERMISSION_PAGES`).
   On the `users` page, `delete` = "deactivate". `perm_action` enum now includes `confirm`.
-- **RULE - every navigable page has a Role Access row.** Only Profile is exempt (a user
-  always manages their own). Adding a page = (1) add to `PERMISSION_PAGES`, (2) seed
-  `role_permissions` for it in the same migration, (3) gate the nav item + page with
-  `can('<key>', ...)`, (4) point that table's RLS at `has_perm('<key>', ...)`.
-- `role_permissions (role, page, action, allowed)` - per-role defaults
-- `user_permissions (user_id, page, action, allowed)` - per-user override (wins over role)
-- `private.has_perm(page text, action perm_action)`: super_admin -> true;
-  else user override, else role default, else false
-- `AuthContext.can(page, action)` is the single client gate; RLS on
+- **RULE - the Role Access matrix is now automatic.** Adding a page = (1) add to
+  `PERMISSION_PAGES`, (2) gate the nav item + page with `can('<key>', ...)`, (3) point
+  that table's RLS at `has_perm('<key>', ...)`. **No `role_permissions` seeding** - an
+  unseeded (page, action) coalesces to denied for every non-super role until a Super
+  Admin switches it on. (Old per-page seed migrations stay valid, just unnecessary now.)
+- `role_permissions (role text -> roles.key, page, action, allowed)` - per-role grants
+- `user_permissions (user_id, page, action, allowed)` - per-user override (wins outright)
+- `private.has_perm(page text, action perm_action)`: super_admin -> true; else user
+  override; else `bool_or(allowed)` across the caller's `user_roles`; else false.
+- `AuthContext.can(page, action)` is the single client gate; it loads
+  `role_permissions` for **every** role in `user_roles` and OR-combines them. RLS on
   clients/customers/orders/client_branches (-> `clients`), client_packages + the package log
-  (-> `packages`), accounts (-> `accounts`) all call `has_perm`.
-- Role Access page: **By Role** and **By User** modes; both edit the matrix.
-  Writes are super_admin-only (RLS `rp_super_admin` / `up_super_admin`).
+  (-> `packages`), accounts (-> `accounts`), payouts (-> `finance`) all call `has_perm`.
+- Role Access page: **By Role** (also creates/renames/deletes custom roles) and
+  **By User** (override one person; role default = union of their roles). Writes are
+  super_admin-only (RLS `rp_super_admin` / `up_super_admin` / `roles_super` / `ur_super`).
 
-## Edge Function `admin-users` - DEPLOYED to fmfbjpblhqgrwqeswztw (v5, 2026-08-28)
+## Edge Function `admin-users` - DEPLOYED to fmfbjpblhqgrwqeswztw (v6, 2026-08-30)
 `supabase/functions/admin-users/index.ts`. The ONLY place the service_role key
 is used (Supabase injects it - no secret to configure). verify_jwt on.
 Every profile mutation for OTHER users goes through it. Actions:
-- `create`      { full_name, email, phone, role, password }                - needs `users.add`
-- `update`      { user_id, full_name?, phone?, role?, commission_kind?, commission_value?, commission_active? } - `users.edit`
+- `create`      { full_name, email, phone, roles:string[], password }      - needs `users.add`
+- `update`      { user_id, full_name?, phone?, roles?:string[], commission_kind?, commission_value?, commission_active? } - `users.edit`
 - `set_password`{ user_id, password }                                      - needs `users.edit`
 - `set_active`  { user_ids[], active }                                     - `users.edit` on / `users.delete` off
-Non-super callers cannot touch `super_admin`/`admin` accounts. Client wrapper:
-`src/lib/adminUsers.js`. The user logs in with the password set at create time.
+`roles[]` is validated against `public.roles` and written to `user_roles` (create =
+insert; update = replace-all). Legacy `role` (singular) still accepted as `[role]`.
+`profiles.role` is set by the DB trigger, not by this function. Non-super callers
+cannot touch or grant `super_admin`/`admin`. Client wrapper: `src/lib/adminUsers.js`.
+The user logs in with the password set at create time.
 
 ## Data model - Supabase (see /supabase/*.sql)
 - **Gotcha fixed 2026-08-27** (`003_grants.sql`): tables made via MCP migrations
@@ -199,7 +219,14 @@ Non-super callers cannot touch `super_admin`/`admin` accounts. Client wrapper:
   `grant select,insert,update,delete on <t> to authenticated, service_role;`
   (default privileges are now set, but only for the migration-runner role).
 
-- `profiles`         - 1:1 with auth.users; full_name, email, phone, role, avatar_url, is_active
+- `profiles`         - 1:1 with auth.users; full_name, email, phone, role (DERIVED primary
+                        tier - see Roles), avatar_url, is_active
+- `roles`            - (key, label, is_system, sort) role catalogue; 4 system rows +
+                        Super-Admin-added custom rows. `trg_roles_protect` blocks deleting /
+                        re-keying system rows. [020_custom_roles_multi_role.sql]
+- `user_roles`       - (user_id, role -> roles.key) many-to-many; a user's permissions are
+                        the UNION over these. `trg_user_roles_sync` keeps `profiles.role`
+                        = most-privileged system role held (else 'agent').
 - `clients`          - the company: company_name, status (active|lead|inactive), notes, created_by
 - `client_branches`  - (client_id, branch_name, city, poc_name, poc_phone, poc_email, address,
                         is_primary)  [new 2026-08-27, `004_client_branches.sql`; clients lost
@@ -259,12 +286,13 @@ Non-super callers cannot touch `super_admin`/`admin` accounts. Client wrapper:
   (trg_profiles_protect - role/is_active/commission_kind/value/active).
   `clients.commission_kind/value` columns still exist but are UNUSED by the UI (superseded by
   packages); kept only as the `confirm_order` legacy fallback.
-- `role_permissions` - (role, page, action, allowed)  [restructured 2026-08-27]
+- `role_permissions` - (role text -> roles.key, page, action, allowed)  [020: enum->text+FK]
 - `user_permissions` - (user_id, page, action, allowed)  [new 2026-08-27]
 - `confirm_order(uuid)` - SECURITY DEFINER RPC, gated by `orders.confirm`, computes + freezes
   the commission split. (Supabase advisor flags it as user-executable - intentional.)
-- RLS on all 12 tables (incl. `payouts`). `private` helper fns (not REST-exposed):
-  `is_admin()`, `current_user_role()`, `is_active_user()`, `has_perm(text, perm_action)`
+- RLS on all 14 tables (incl. `payouts`, `roles`, `user_roles`). `private` helper fns
+  (not REST-exposed): `is_admin()`, `current_user_role()`, `is_active_user()`,
+  `has_perm(text, perm_action)` (now ORs over `user_roles`)
 - Trigger `on_auth_user_created` auto-inserts a `profiles` row for every new auth user
 - Trigger `trg_profiles_protect` blocks role/is_active changes by a logged-in
   non-admin; a service-role connection (auth.uid() null) is allowed through

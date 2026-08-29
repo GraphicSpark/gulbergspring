@@ -8,11 +8,15 @@
 // check lives in one place.
 //
 // Actions (POST JSON { action, ... }):
-//   create        { full_name, email, phone, role, password }   -> needs users.add
-//   update        { user_id, full_name?, phone?, role?, commission_kind?,
-//                   commission_value?, commission_active? }         -> needs users.edit
-//   set_password  { user_id, password }                          -> needs users.edit
-//   set_active    { user_ids: [], active: bool }                 -> users.edit (on) / users.delete (off)
+//   create        { full_name, email, phone, roles: string[], password } -> needs users.add
+//   update        { user_id, full_name?, phone?, roles?: string[], commission_kind?,
+//                   commission_value?, commission_active? }             -> needs users.edit
+//   set_password  { user_id, password }                              -> needs users.edit
+//   set_active    { user_ids: [], active: bool }                     -> users.edit (on) / users.delete (off)
+//
+// A user can hold several roles (public.user_roles). `profiles.role` is kept in
+// sync as the most-privileged system role by the trg_user_roles_sync trigger.
+// `role` (singular) is still accepted as an alias for `roles: [role]`.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 
@@ -25,7 +29,6 @@ const CORS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-const VALID_ROLES = ['super_admin', 'admin', 'agent', 'ops']
 const PRIVILEGED = ['super_admin', 'admin']
 const MIN_PASSWORD = 8
 
@@ -81,10 +84,23 @@ Deno.serve(async (req) => {
     return rolePerm?.allowed === true
   }
 
+  // every role held by any of the given users (used for privileged-target checks)
   const rolesOf = async (ids: string[]): Promise<string[]> => {
     if (ids.length === 0) return []
-    const { data } = await admin.from('profiles').select('role').in('id', ids)
+    const { data } = await admin.from('user_roles').select('role').in('user_id', ids)
     return (data ?? []).map((r) => r.role)
+  }
+
+  const validRoleKeys = async (): Promise<string[]> => {
+    const { data } = await admin.from('roles').select('key')
+    return (data ?? []).map((r) => r.key)
+  }
+
+  // normalise the incoming role selection (accepts `roles: []` or legacy `role`)
+  const wantedRoles = (): string[] => {
+    if (Array.isArray(body.roles)) return [...new Set(body.roles.map(String))]
+    if (body.role) return [String(body.role)]
+    return []
   }
 
   let body: Record<string, unknown>
@@ -104,14 +120,17 @@ Deno.serve(async (req) => {
       const password = String(body.password ?? '')
       const fullName = String(body.full_name ?? '').trim()
       const phone = body.phone ? String(body.phone).trim() : null
-      const role = VALID_ROLES.includes(String(body.role)) ? String(body.role) : 'agent'
+
+      const valid = await validRoleKeys()
+      let roles = wantedRoles().filter((r) => valid.includes(r))
+      if (roles.length === 0) roles = ['agent']
 
       if (!email) return json({ error: 'Email is required' }, 400)
       if (password.length < MIN_PASSWORD) {
         return json({ error: `Password must be at least ${MIN_PASSWORD} characters` }, 400)
       }
-      if (!isSuper && PRIVILEGED.includes(role)) {
-        return json({ error: 'Only a Super Admin can create Admin accounts' }, 403)
+      if (!isSuper && roles.some((r) => PRIVILEGED.includes(r))) {
+        return json({ error: 'Only a Super Admin can grant Admin roles' }, 403)
       }
 
       const { data: created, error: cErr } = await admin.auth.admin.createUser({
@@ -127,11 +146,19 @@ Deno.serve(async (req) => {
       const newId = created.user.id
       const { error: pErr } = await admin
         .from('profiles')
-        .update({ full_name: fullName, phone, role, is_active: true })
+        .update({ full_name: fullName, phone, is_active: true })
         .eq('id', newId)
       if (pErr) {
         await admin.auth.admin.deleteUser(newId) // no orphan auth users
         return json({ error: pErr.message }, 400)
+      }
+      // trg_user_roles_sync sets profiles.role from this
+      const { error: rErr } = await admin
+        .from('user_roles')
+        .insert(roles.map((role) => ({ user_id: newId, role })))
+      if (rErr) {
+        await admin.auth.admin.deleteUser(newId)
+        return json({ error: rErr.message }, 400)
       }
       return json({ ok: true, id: newId })
     }
@@ -143,9 +170,15 @@ Deno.serve(async (req) => {
       const userId = String(body.user_id ?? '')
       if (!userId) return json({ error: 'user_id is required' }, 400)
 
-      const [targetRole] = await rolesOf([userId])
-      if (!targetRole) return json({ error: 'User not found' }, 404)
-      if (!isSuper && PRIVILEGED.includes(targetRole)) {
+      const { data: targetProfile } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('id', userId)
+        .maybeSingle()
+      if (!targetProfile) return json({ error: 'User not found' }, 404)
+
+      const targetRoles = await rolesOf([userId])
+      if (!isSuper && targetRoles.some((r) => PRIVILEGED.includes(r))) {
         return json({ error: 'Only a Super Admin can manage Admin accounts' }, 403)
       }
 
@@ -164,19 +197,34 @@ Deno.serve(async (req) => {
         patch.commission_active = body.commission_active
       }
 
-      if (body.role) {
-        const newRole = String(body.role)
-        if (!VALID_ROLES.includes(newRole)) return json({ error: 'Invalid role' }, 400)
-        if (userId === caller.id) return json({ error: 'You cannot change your own role' }, 400)
-        if (!isSuper && PRIVILEGED.includes(newRole)) {
+      const rolesGiven = Array.isArray(body.roles) || 'role' in body
+      let newRoles: string[] | null = null
+      if (rolesGiven) {
+        const valid = await validRoleKeys()
+        newRoles = wantedRoles().filter((r) => valid.includes(r))
+        if (newRoles.length === 0) return json({ error: 'Pick at least one valid role' }, 400)
+        if (userId === caller.id && !isSuper) {
+          return json({ error: 'You cannot change your own roles' }, 400)
+        }
+        if (!isSuper && newRoles.some((r) => PRIVILEGED.includes(r))) {
           return json({ error: 'Only a Super Admin can assign Admin roles' }, 403)
         }
-        patch.role = newRole
       }
 
-      if (Object.keys(patch).length === 0) return json({ ok: true })
-      const { error } = await admin.from('profiles').update(patch).eq('id', userId)
-      if (error) return json({ error: error.message }, 400)
+      if (Object.keys(patch).length > 0) {
+        const { error } = await admin.from('profiles').update(patch).eq('id', userId)
+        if (error) return json({ error: error.message }, 400)
+      }
+
+      if (newRoles) {
+        const del = await admin.from('user_roles').delete().eq('user_id', userId)
+        if (del.error) return json({ error: del.error.message }, 400)
+        const ins = await admin
+          .from('user_roles')
+          .insert(newRoles.map((role) => ({ user_id: userId, role })))
+        if (ins.error) return json({ error: ins.error.message }, 400)
+      }
+
       return json({ ok: true })
     }
 
@@ -191,8 +239,7 @@ Deno.serve(async (req) => {
         return json({ error: `Password must be at least ${MIN_PASSWORD} characters` }, 400)
       }
 
-      const [targetRole] = await rolesOf([userId])
-      if (!isSuper && PRIVILEGED.includes(targetRole)) {
+      if (!isSuper && (await rolesOf([userId])).some((r) => PRIVILEGED.includes(r))) {
         return json({ error: 'Only a Super Admin can change an Admin password' }, 403)
       }
 

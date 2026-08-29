@@ -106,6 +106,15 @@
   padding: 6px 4px 10px;
 }
 
+.ra-add-role {
+  margin-top: 4px;
+  color: var(--accent);
+}
+.ra-add-role .ra-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* grid panel - flat */
 .ra-panel {
   min-width: 0;

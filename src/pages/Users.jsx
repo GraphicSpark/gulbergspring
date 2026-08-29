@@ -13,7 +13,8 @@ import {
 import { supabase } from '../lib/supabase'
 import { adminUsers, generatePassword } from '../lib/adminUsers'
 import { useAuth } from '../context/useAuth'
-import { MANAGED_ROLES, ROLE_LABELS } from '../lib/permissions'
+import { PRIVILEGED_ROLES } from '../lib/permissions'
+import { fetchRoles, roleLabel } from '../lib/roles'
 import { fmtDate } from '../lib/format'
 import Avatar from '../components/Avatar'
 import Modal from '../components/Modal'
@@ -24,11 +25,44 @@ import BulkBar from '../components/data/BulkBar'
 import StatCards from '../components/data/StatCards'
 
 const PAGE_SIZE = 15
-const PRIVILEGED = ['super_admin', 'admin']
-const EMPTY_FORM = { full_name: '', email: '', phone: '', role: 'agent', password: '' }
+const PRIVILEGED = PRIVILEGED_ROLES
+const EMPTY_FORM = { full_name: '', email: '', phone: '', roles: ['agent'], password: '' }
 
-function RoleBadge({ role }) {
-  return <span className={`role-badge ${role}`}>{ROLE_LABELS[role] ?? role}</span>
+function RoleBadges({ roles, allRoles }) {
+  if (!roles?.length) return <span className="role-badge">—</span>
+  return (
+    <span className="role-badge-row">
+      {roles.map((r) => (
+        <span key={r} className={`role-badge ${r}`}>
+          {roleLabel(allRoles, r)}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+// multi-select role checklist (system + custom roles together)
+function RolePicker({ all, value, onChange }) {
+  const toggle = (key) =>
+    onChange(value.includes(key) ? value.filter((r) => r !== key) : [...value, key])
+  if (all.length === 0) {
+    return <span className="field-hint">No roles available</span>
+  }
+  return (
+    <div className="role-picker">
+      {all.map((r) => (
+        <label key={r.key} className="check-line">
+          <input
+            type="checkbox"
+            checked={value.includes(r.key)}
+            onChange={() => toggle(r.key)}
+          />
+          {r.label}
+          {!r.is_system && <span className="role-picker-tag">custom</span>}
+        </label>
+      ))}
+    </div>
+  )
 }
 
 export default function Users() {
@@ -40,6 +74,7 @@ export default function Users() {
   const canDeactivate = can('users', 'delete')
 
   const [rows, setRows] = useState([])
+  const [allRoles, setAllRoles] = useState([]) // [{ key, label, is_system }]
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
 
@@ -58,10 +93,17 @@ export default function Users() {
   const fetchRows = useCallback(async () => {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, full_name, email, phone, role, avatar_url, is_active, commission_kind, commission_value, commission_active, created_at')
+      .select(
+        'id, full_name, email, phone, role, avatar_url, is_active, commission_kind, commission_value, commission_active, created_at, user_roles(role)',
+      )
       .order('created_at', { ascending: false })
     if (error) toast.error('Could not load users')
-    setRows(data ?? [])
+    setRows(
+      (data ?? []).map((u) => ({
+        ...u,
+        roles: (u.user_roles ?? []).map((r) => r.role),
+      })),
+    )
     setSelected(new Set())
     setLoading(false)
   }, [])
@@ -70,10 +112,14 @@ export default function Users() {
     if (canView) fetchRows()
   }, [canView, fetchRows])
 
+  useEffect(() => {
+    if (canView) fetchRoles().then(setAllRoles).catch(() => {})
+  }, [canView])
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     return rows.filter((u) => {
-      if (roleFilter !== 'all' && u.role !== roleFilter) return false
+      if (roleFilter !== 'all' && !u.roles.includes(roleFilter)) return false
       if (statusFilter === 'active' && !u.is_active) return false
       if (statusFilter === 'deactivated' && u.is_active) return false
       if (
@@ -115,7 +161,7 @@ export default function Users() {
   // ---- actions -------------------------------------------------------------
   const mayTouch = (u) => {
     if (u.id === profile?.id) return false
-    if (!isSuperAdmin && PRIVILEGED.includes(u.role)) return false
+    if (!isSuperAdmin && (u.roles ?? []).some((r) => PRIVILEGED.includes(r))) return false
     return true
   }
 
@@ -181,7 +227,9 @@ export default function Users() {
     )
   }
 
-  const roleOptions = isSuperAdmin ? ['super_admin', ...MANAGED_ROLES] : ['agent', 'ops']
+  const assignableRoles = isSuperAdmin
+    ? allRoles
+    : allRoles.filter((r) => !PRIVILEGED.includes(r.key))
 
   const columns = [
     {
@@ -201,7 +249,11 @@ export default function Users() {
     },
     { key: 'email', header: 'Email', render: (u) => u.email },
     { key: 'phone', header: 'Contact', render: (u) => u.phone || '—' },
-    { key: 'role', header: 'Role', render: (u) => <RoleBadge role={u.role} /> },
+    {
+      key: 'role',
+      header: 'Roles',
+      render: (u) => <RoleBadges roles={u.roles} allRoles={allRoles} />,
+    },
     {
       key: 'status',
       header: 'Status',
@@ -238,7 +290,7 @@ export default function Users() {
               <Pencil size={13} />
             </button>
           )}
-          {canEdit && (isSuperAdmin || !PRIVILEGED.includes(u.role)) && (
+          {canEdit && (isSuperAdmin || !(u.roles ?? []).some((r) => PRIVILEGED.includes(r))) && (
             <button title="Change password" onClick={() => setPwUser(u)}>
               <KeyRound size={13} />
             </button>
@@ -289,9 +341,9 @@ export default function Users() {
               onChange={(e) => onRoleFilter(e.target.value)}
             >
               <option value="all">All roles</option>
-              {['super_admin', ...MANAGED_ROLES].map((r) => (
-                <option key={r} value={r}>
-                  {ROLE_LABELS[r]}
+              {allRoles.map((r) => (
+                <option key={r.key} value={r.key}>
+                  {r.label}
                 </option>
               ))}
             </select>
@@ -341,7 +393,7 @@ export default function Users() {
 
       {addOpen && (
         <AddUserModal
-          roleOptions={roleOptions}
+          assignableRoles={assignableRoles}
           onClose={() => setAddOpen(false)}
           onDone={() => {
             setAddOpen(false)
@@ -353,7 +405,7 @@ export default function Users() {
       {editUser && (
         <EditUserModal
           user={editUser}
-          isSuperAdmin={isSuperAdmin}
+          assignableRoles={assignableRoles}
           onClose={() => setEditUser(null)}
           onDone={() => {
             setEditUser(null)
@@ -374,7 +426,7 @@ export default function Users() {
 }
 
 // ── Add User ──────────────────────────────────────────────────────────────
-function AddUserModal({ roleOptions, onClose, onDone }) {
+function AddUserModal({ assignableRoles, onClose, onDone }) {
   const [form, setForm] = useState(EMPTY_FORM)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
@@ -385,6 +437,7 @@ function AddUserModal({ roleOptions, onClose, onDone }) {
     setErr('')
     if (!form.full_name.trim()) return setErr('Name is required')
     if (!form.email.trim()) return setErr('Email is required')
+    if (form.roles.length === 0) return setErr('Pick at least one role')
     if (form.password.length < 8) return setErr('Password must be at least 8 characters')
     setBusy(true)
     try {
@@ -392,7 +445,7 @@ function AddUserModal({ roleOptions, onClose, onDone }) {
         full_name: form.full_name.trim(),
         email: form.email.trim(),
         phone: form.phone.trim() || null,
-        role: form.role,
+        roles: form.roles,
         password: form.password,
       })
       toast.success('User created')
@@ -441,19 +494,13 @@ function AddUserModal({ roleOptions, onClose, onDone }) {
           </div>
         </div>
         <div className="field">
-          <label htmlFor="u-role">Role</label>
-          <select
-            id="u-role"
-            className="select"
-            value={form.role}
-            onChange={(e) => set('role', e.target.value)}
-          >
-            {roleOptions.map((r) => (
-              <option key={r} value={r}>
-                {ROLE_LABELS[r]}
-              </option>
-            ))}
-          </select>
+          <label>Roles</label>
+          <RolePicker
+            all={assignableRoles}
+            value={form.roles}
+            onChange={(roles) => set('roles', roles)}
+          />
+          <span className="field-hint">The user gets the combined access of every role ticked.</span>
         </div>
         <div className="field">
           <label htmlFor="u-pw">Set password</label>
@@ -490,12 +537,13 @@ function AddUserModal({ roleOptions, onClose, onDone }) {
   )
 }
 
-// ── Edit User (name / contact / role) ─────────────────────────────────────
-function EditUserModal({ user, isSuperAdmin, onClose, onDone }) {
+// ── Edit User (name / contact / roles) ────────────────────────────────────
+function EditUserModal({ user, assignableRoles, onClose, onDone }) {
+  const initialRoles = user.roles?.length ? user.roles : user.role ? [user.role] : []
   const [form, setForm] = useState({
     full_name: user.full_name ?? '',
     phone: user.phone ?? '',
-    role: user.role,
+    roles: initialRoles,
     commission_active: user.commission_active ?? true,
     commission_kind: user.commission_kind ?? 'fixed',
     commission_value: String(user.commission_value ?? ''),
@@ -503,11 +551,15 @@ function EditUserModal({ user, isSuperAdmin, onClose, onDone }) {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }))
-  const roleOptions = isSuperAdmin ? ['super_admin', ...MANAGED_ROLES] : ['agent', 'ops']
+
+  const rolesChanged =
+    form.roles.length !== initialRoles.length ||
+    form.roles.some((r) => !initialRoles.includes(r))
 
   const submit = async (e) => {
     e.preventDefault()
     setErr('')
+    if (form.roles.length === 0) return setErr('Pick at least one role')
     const cv = Number(form.commission_value) || 0
     if (form.commission_active && form.commission_kind === 'percent' && cv > 100) {
       return setErr('Percent cannot exceed 100')
@@ -520,7 +572,7 @@ function EditUserModal({ user, isSuperAdmin, onClose, onDone }) {
         commission_active: form.commission_active,
         commission_kind: form.commission_kind,
         commission_value: cv,
-        ...(form.role !== user.role ? { role: form.role } : {}),
+        ...(rolesChanged ? { roles: form.roles } : {}),
       })
       toast.success('User updated')
       onDone()
@@ -553,19 +605,12 @@ function EditUserModal({ user, isSuperAdmin, onClose, onDone }) {
           />
         </div>
         <div className="field">
-          <label htmlFor="e-role">Role</label>
-          <select
-            id="e-role"
-            className="select"
-            value={form.role}
-            onChange={(e) => set('role', e.target.value)}
-          >
-            {[...new Set([user.role, ...roleOptions])].map((r) => (
-              <option key={r} value={r}>
-                {ROLE_LABELS[r] ?? r}
-              </option>
-            ))}
-          </select>
+          <label>Roles</label>
+          <RolePicker
+            all={assignableRoles}
+            value={form.roles}
+            onChange={(roles) => set('roles', roles)}
+          />
         </div>
         <div className="field">
           <label>Email</label>

@@ -1,17 +1,34 @@
 // Permission model: page x action, role-wise (role_permissions) with per-user
-// overrides (user_permissions). super_admin bypasses every check.
+// overrides (user_permissions). A user can hold several roles (user_roles) and
+// gets the UNION of what any of them grants. super_admin bypasses every check.
+//
+// Roles live in the `roles` table now (4 system rows + any custom rows a Super
+// Admin adds on the Role Access page). Helpers to read/CRUD them: src/lib/roles.js.
 
-export const ROLES = ['super_admin', 'admin', 'agent', 'ops']
+// The built-in roles. `profiles.role` is always one of these (a trigger keeps it
+// as the most-privileged system role a user holds) - it drives the RLS
+// super-admin bypass and `is_admin()`. Custom roles only ever grant explicit
+// page x action permissions.
+export const SYSTEM_ROLES = ['super_admin', 'admin', 'agent', 'ops']
+export const PRIVILEGED_ROLES = ['super_admin', 'admin']
 
-export const ROLE_LABELS = {
+// Fallback labels only - the real label comes from the `roles` table.
+export const ROLE_LABEL_FALLBACK = {
   super_admin: 'Super Admin',
   admin: 'Admin',
   agent: 'Agent',
   ops: 'Ops',
 }
 
-// Roles whose defaults live in role_permissions (super_admin is not stored).
-export const MANAGED_ROLES = ['admin', 'agent', 'ops']
+// label -> a safe role key ("Finance Manager" -> "finance_manager")
+export function roleKeyFromLabel(label) {
+  return String(label ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40)
+}
 
 export const PERM_ACTIONS = ['view', 'add', 'edit', 'delete', 'confirm']
 
@@ -27,9 +44,10 @@ export const ACTION_LABELS = {
 // EVERY navigable page (except Profile, which is always available to its owner)
 // must have an entry here. When you add a new page:
 //   1. add it here,
-//   2. seed `role_permissions` for it in the same migration,
-//   3. gate the nav item + the page with `can('<key>', ...)`,
-//   4. point its table RLS at `has_perm('<key>', ...)`.
+//   2. gate the nav item + the page with `can('<key>', ...)`,
+//   3. point its table RLS at `has_perm('<key>', ...)`.
+// Seeding `role_permissions` is NOT needed - an unseeded (page, action) is denied
+// for every non-super role until a Super Admin switches it on in the grid.
 // `delete` on the users page means "deactivate".
 // `confirm` on the orders page means "mark the service availed" (locks commission).
 export const PERMISSION_PAGES = [

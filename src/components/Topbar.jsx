@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ChevronDown, IdCard, LogOut, Menu } from 'lucide-react'
 import { useAuth } from '../context/useAuth'
-import { ROLE_LABELS } from '../lib/permissions'
+import { ROLE_LABEL_FALLBACK } from '../lib/permissions'
 
 function initials(name, email) {
   const src = (name || '').trim() || (email || '').trim()
@@ -13,7 +13,7 @@ function initials(name, email) {
 }
 
 export default function Topbar({ onToggleSidebar }) {
-  const { profile, session, signOut } = useAuth()
+  const { profile, roles, session, signOut } = useAuth()
   const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef(null)
@@ -34,7 +34,11 @@ export default function Topbar({ onToggleSidebar }) {
 
   const name = profile?.full_name || session?.user?.email || 'Account'
   const email = profile?.email || session?.user?.email || ''
-  const roleLabel = profile?.role ? ROLE_LABELS[profile.role] ?? profile.role : ''
+  const prettyRole = (r) =>
+    ROLE_LABEL_FALLBACK[r] ?? r.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+  const list = roles?.length ? roles : profile?.role ? [profile.role] : []
+  const roleLabel =
+    list.length > 1 ? `${prettyRole(list[0])} +${list.length - 1}` : list.map(prettyRole).join('')
 
   const handleSignOut = async () => {
     await signOut()
