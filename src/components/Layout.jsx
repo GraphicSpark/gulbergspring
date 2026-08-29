@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { useAuth } from '../context/useAuth'
 import Sidebar from './Sidebar'
@@ -42,7 +42,9 @@ export default function Layout() {
       <div className="app-main">
         <Topbar onToggleSidebar={() => setSidebarOpen((v) => !v)} />
         <main className="app-content">
-          <Outlet />
+          <Suspense fallback={<div style={{ color: 'var(--muted)', padding: 8 }}>Loading…</div>}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
     </div>

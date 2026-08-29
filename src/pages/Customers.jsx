@@ -24,9 +24,11 @@ import {
   toStored,
 } from '../lib/phone'
 import { downloadCsv, parseCsv, toCsv } from '../lib/csv'
+import { dbErrorMessage } from '../lib/errors'
 import Modal from '../components/Modal'
 import ConfirmDelete from '../components/ConfirmDelete'
 import PkPhoneInput from '../components/PkPhoneInput'
+import PhoneLink from '../components/PhoneLink'
 import DataTable from '../components/data/DataTable'
 import FilterBar from '../components/data/FilterBar'
 import Pagination from '../components/data/Pagination'
@@ -137,7 +139,7 @@ export default function Customers() {
     const ids = del.kind === 'bulk' ? [...del.ids] : [del.row.id]
     const { error } = await supabase.from('customers').delete().in('id', ids)
     setDelBusy(false)
-    if (error) return toast.error(error.message)
+    if (error) return toast.error(dbErrorMessage(error, 'customer'))
     toast.success(`${ids.length} customer(s) deleted`)
     setDel(null)
     setBulkAction('')
@@ -192,7 +194,7 @@ export default function Customers() {
       header: 'Name',
       render: (c) => <span className="primary">{c.full_name}</span>,
     },
-    { key: 'phone', header: 'Contact', render: (c) => formatPkPhone(c.phone) },
+    { key: 'phone', header: 'Contact', render: (c) => <PhoneLink phone={c.phone} /> },
     { key: 'source', header: 'Source', render: (c) => cap(c.source) || '—' },
     { key: 'added', header: 'Added', render: (c) => fmtDate(c.created_at) },
     {
@@ -419,13 +421,23 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, onClose, on
     setErr('')
     if (!form.full_name.trim()) return setErr('Name is required')
     if (!isValidPkMobile(form.phoneLocal)) return setErr(phoneErr || 'Invalid phone number')
-    if (!form.source) return setErr('Source is required')
 
+    const phone = toStored(form.phoneLocal)
     setBusy(true)
+
+    // one customer per phone number
+    let dupeQ = supabase.from('customers').select('ref_no, full_name').eq('phone', phone)
+    if (editing) dupeQ = dupeQ.neq('id', row.id)
+    const { data: dupe } = await dupeQ.maybeSingle()
+    if (dupe) {
+      setBusy(false)
+      return setErr(`A customer with this number already exists — #${dupe.ref_no} ${dupe.full_name}.`)
+    }
+
     const payload = {
       full_name: form.full_name.trim(),
-      phone: toStored(form.phoneLocal),
-      source: form.source,
+      phone,
+      source: form.source || null,
       notes: form.notes.trim() || null,
     }
     const q = editing
@@ -433,7 +445,13 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, onClose, on
       : supabase.from('customers').insert({ ...payload, created_by: createdBy })
     const { error } = await q
     setBusy(false)
-    if (error) return setErr(error.message)
+    if (error) {
+      return setErr(
+        error.code === '23505'
+          ? 'A customer with this number already exists.'
+          : dbErrorMessage(error, 'customer'),
+      )
+    }
     toast.success(editing ? 'Customer updated' : 'Customer added')
     onDone()
   }
@@ -446,7 +464,7 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, onClose, on
         <div>
           <ViewRow label="Customer ID" value={row.ref_no} />
           <ViewRow label="Customer name" value={row.full_name} />
-          <ViewRow label="Contact no" value={formatPkPhone(row.phone)} />
+          <ViewRow label="Contact no" value={<PhoneLink phone={row.phone} />} />
           <ViewRow label="Source" value={cap(row.source)} />
           <ViewRow label="Notes" value={row.notes} />
           <ViewRow label="Added" value={fmtDate(row.created_at)} />
@@ -493,7 +511,7 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, onClose, on
             {form.phoneLocal && phoneErr && <span className="field-error">{phoneErr}</span>}
           </div>
           <div className="field">
-            <label htmlFor="c-source">Source *</label>
+            <label htmlFor="c-source">Source (optional)</label>
             <select
               id="c-source"
               className="select"
@@ -565,18 +583,23 @@ function ImportModal({ createdBy, onClose, onDone }) {
     const iPhone = pick(head, 'phone', 'contact', 'mobile')
     const iSource = pick(head, 'source')
 
-    if (iName === -1 || iPhone === -1 || iSource === -1) {
-      toast.error('CSV needs Name, Phone and Source columns')
+    if (iName === -1 || iPhone === -1) {
+      toast.error('CSV needs Name and Phone columns')
       return
     }
 
+    // phone numbers already in the system - skip those rows
+    const { data: existing } = await supabase.from('customers').select('phone')
+    const known = new Set((existing ?? []).map((c) => c.phone).filter(Boolean))
+
     const valid = []
     const skipped = []
+    const seen = new Set()
     for (let r = 1; r < rows.length; r++) {
       const row = rows[r]
       const name = (row[iName] ?? '').trim()
       const local = toLocal(row[iPhone] ?? '')
-      const src = (row[iSource] ?? '').trim().toLowerCase()
+      const src = iSource === -1 ? '' : (row[iSource] ?? '').trim().toLowerCase()
 
       if (!name) {
         skipped.push({ line: r + 1, reason: 'missing name' })
@@ -586,14 +609,16 @@ function ImportModal({ createdBy, onClose, onDone }) {
         skipped.push({ line: r + 1, reason: `invalid phone "${(row[iPhone] ?? '').trim()}"` })
         continue
       }
-      if (!SOURCES.includes(src)) {
-        skipped.push({ line: r + 1, reason: `invalid source "${(row[iSource] ?? '').trim()}"` })
+      const stored = toStored(local)
+      if (known.has(stored) || seen.has(stored)) {
+        skipped.push({ line: r + 1, reason: `customer with ${stored} already exists` })
         continue
       }
+      seen.add(stored)
       valid.push({
         full_name: name,
-        phone: toStored(local),
-        source: src,
+        phone: stored,
+        source: SOURCES.includes(src) ? src : null,
         created_by: createdBy,
       })
     }
@@ -605,7 +630,13 @@ function ImportModal({ createdBy, onClose, onDone }) {
     setBusy(true)
     const { error } = await supabase.from('customers').insert(preview.valid)
     setBusy(false)
-    if (error) return toast.error(error.message)
+    if (error) {
+      return toast.error(
+        error.code === '23505'
+          ? 'Some numbers are already registered — refresh and try again.'
+          : dbErrorMessage(error, 'customer'),
+      )
+    }
     toast.success(`Imported ${preview.valid.length} customer(s)`)
     onDone()
   }
@@ -614,7 +645,7 @@ function ImportModal({ createdBy, onClose, onDone }) {
     <Modal open onClose={onClose} title="Import customers" width={460}>
       <div className="modal-form">
         <p className="field-hint">
-          CSV with a header row. Columns: <b>Name</b>, <b>Phone</b>, <b>Source</b> (all required).
+          CSV with a header row. Required: <b>Name</b>, <b>Phone</b>. Optional: <b>Source</b>.
           Phone is validated the same way (10 digits, starts with 3).
         </p>
 

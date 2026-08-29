@@ -1,0 +1,33 @@
+.bullet-ta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bullet-ta-bar {
+  display: flex;
+  gap: 6px;
+}
+
+.bullet-ta-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--body);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.bullet-ta-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.bullet-ta textarea {
+  line-height: 1.5;
+}

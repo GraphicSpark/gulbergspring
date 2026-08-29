@@ -4,16 +4,22 @@ import {
   BadgeCheck,
   ClipboardList,
   Clock,
+  Coins,
+  Download,
   Eye,
   Plus,
   RefreshCw,
+  Tag,
   Trash2,
   Wallet,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/useAuth'
-import { fmtDate, fmtMoney } from '../lib/format'
+import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format'
 import { formatPkPhone, isValidPkMobile, pkPhoneError, toStored } from '../lib/phone'
+import { slotLabel, toSlotValue } from '../lib/slots'
+import { downloadCsv, toCsv } from '../lib/csv'
+import TimeSlotPicker from '../components/TimeSlotPicker'
 import Modal from '../components/Modal'
 import ConfirmDelete from '../components/ConfirmDelete'
 import PkPhoneInput from '../components/PkPhoneInput'
@@ -28,7 +34,8 @@ const PAGE_SIZE = 15
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : '')
 
 const ORDER_SELECT = `
-  id, ref_no, service, package_id, package_name, amount, status, notes, created_at,
+  id, ref_no, service, account_id, package_id, package_name, amount, status, notes, created_at,
+  scheduled_date, scheduled_time,
   list_amount, discount_kind, discount_value,
   client_kind, client_value, client_amount,
   agent_kind, agent_value, agent_amount, company_amount,
@@ -36,10 +43,18 @@ const ORDER_SELECT = `
   customer:customer_id ( ref_no, full_name, phone ),
   client:client_id ( ref_no, company_name ),
   branch:branch_id ( branch_name, city ),
-  agent:agent_id ( full_name )
+  agent:agent_id ( full_name ),
+  account:account_id ( ref_no, name )
 `
 
 const statusClass = (s) => (s === 'confirmed' ? 'on' : s === 'cancelled' ? 'bad' : 'off')
+
+const discountText = (o) => {
+  if (!o.discount_kind || o.discount_kind === 'none') return ''
+  return o.discount_kind === 'percent'
+    ? `${o.discount_value}% off`
+    : `${fmtMoney(o.discount_value)} off`
+}
 
 // discount amount off a list price; final = max(list - discount, 0)
 const calcDiscount = (list, kind, value) => {
@@ -50,6 +65,22 @@ const calcDiscount = (list, kind, value) => {
   return 0
 }
 const finalAmount = (list, kind, value) => Math.max((Number(list) || 0) - calcDiscount(list, kind, value), 0)
+
+// optional booking date + 15-min time slot
+function WhenFields({ date, time, onDate, onTime }) {
+  return (
+    <div className="field-row">
+      <div className="field">
+        <label>Date (optional)</label>
+        <input className="input" type="date" value={date} onChange={(e) => onDate(e.target.value)} />
+      </div>
+      <div className="field">
+        <label>Time slot (optional)</label>
+        <TimeSlotPicker value={time} onChange={onTime} />
+      </div>
+    </div>
+  )
+}
 
 function Row({ label, value }) {
   return (
@@ -75,9 +106,14 @@ export default function Orders() {
   const [search, setSearch] = useState('')
   const [statusF, setStatusF] = useState('all')
   const [clientF, setClientF] = useState('all')
+  const [accountF, setAccountF] = useState('all')
   const [mineOnly, setMineOnly] = useState(false)
-  const [from, setFrom] = useState('')
+  const [from, setFrom] = useState('') // created date
   const [to, setTo] = useState('')
+  const [apptFrom, setApptFrom] = useState('') // appointment date
+  const [apptTo, setApptTo] = useState('')
+  const [apptTimeFrom, setApptTimeFrom] = useState('') // appointment time slot
+  const [apptTimeTo, setApptTimeTo] = useState('')
 
   const [selected, setSelected] = useState(new Set())
   const [bulkAction, setBulkAction] = useState('')
@@ -87,11 +123,12 @@ export default function Orders() {
   const [del, setDel] = useState(null)
   const [delBusy, setDelBusy] = useState(false)
 
-  // lookups for the add form / client filter
+  // lookups for the add form / filters
   const [clients, setClients] = useState([])
+  const [accounts, setAccounts] = useState([])
 
   const fetchRows = useCallback(async () => {
-    const [{ data, error }, cl] = await Promise.all([
+    const [{ data, error }, cl, ac] = await Promise.all([
       supabase.from('orders').select(ORDER_SELECT).order('created_at', { ascending: false }),
       supabase
         .from('clients')
@@ -99,10 +136,12 @@ export default function Orders() {
           'id, ref_no, company_name, client_branches(id, branch_name, city, is_primary), client_packages(id, name, price, commission_kind, commission_value, is_active)',
         )
         .order('company_name'),
+      supabase.from('accounts').select('id, ref_no, name').order('name'),
     ])
     if (error) toast.error('Could not load orders')
     setRows(data ?? [])
     setClients(cl.data ?? [])
+    setAccounts(ac.data ?? [])
     setSelected(new Set())
     setLoading(false)
   }, [])
@@ -118,43 +157,66 @@ export default function Orders() {
     return rows.filter((o) => {
       if (statusF !== 'all' && o.status !== statusF) return false
       if (clientF !== 'all' && o.client?.ref_no !== Number(clientF)) return false
+      if (accountF !== 'all' && o.account?.ref_no !== Number(accountF)) return false
       if (mineOnly && o.agent?.full_name !== profile?.full_name) return false
       if (from && o.created_at < from) return false
       if (to && o.created_at > `${to}T23:59:59`) return false
+      if (apptFrom && (!o.scheduled_date || o.scheduled_date < apptFrom)) return false
+      if (apptTo && (!o.scheduled_date || o.scheduled_date > apptTo)) return false
+      if (apptTimeFrom && (!o.scheduled_time || toSlotValue(o.scheduled_time) < apptTimeFrom)) return false
+      if (apptTimeTo && (!o.scheduled_time || toSlotValue(o.scheduled_time) > apptTimeTo)) return false
       if (q) {
         const hay = `${o.ref_no} ${o.customer?.full_name ?? ''} ${o.customer?.phone ?? ''} ${o.client?.company_name ?? ''} ${o.package_name ?? o.service ?? ''}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       return true
     })
-  }, [rows, search, statusF, clientF, mineOnly, from, to, profile])
+  }, [rows, search, statusF, clientF, accountF, mineOnly, from, to, apptFrom, apptTo, apptTimeFrom, apptTimeTo, profile])
 
   const activeFilters =
-    (statusF !== 'all' ? 1 : 0) + (clientF !== 'all' ? 1 : 0) + (mineOnly ? 1 : 0) + (from ? 1 : 0) + (to ? 1 : 0)
+    (statusF !== 'all' ? 1 : 0) +
+    (clientF !== 'all' ? 1 : 0) +
+    (accountF !== 'all' ? 1 : 0) +
+    (mineOnly ? 1 : 0) +
+    (from ? 1 : 0) +
+    (to ? 1 : 0) +
+    (apptFrom ? 1 : 0) +
+    (apptTo ? 1 : 0) +
+    (apptTimeFrom ? 1 : 0) +
+    (apptTimeTo ? 1 : 0)
 
   const resetPage = () => setPage(1)
   const clearFilters = () => {
     setStatusF('all')
     setClientF('all')
+    setAccountF('all')
     setMineOnly(false)
     setFrom('')
     setTo('')
+    setApptFrom('')
+    setApptTo('')
+    setApptTimeFrom('')
+    setApptTimeTo('')
     setSearch('')
     setPage(1)
   }
   const pageRows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
   const stats = useMemo(() => {
-    const mStart = new Date()
-    mStart.setDate(1)
-    mStart.setHours(0, 0, 0, 0)
+    // over confirmed orders (realised revenue):
+    //   Sales    = list price, before discount   (Σ list_amount)
+    //   Discount = Sales − Gross                  (Σ list_amount − Σ amount)
+    //   Gross    = what the customer pays, after discount (Σ amount)
+    const done = rows.filter((o) => o.status === 'confirmed')
+    const sales = done.reduce((s, o) => s + Number(o.list_amount ?? o.amount ?? 0), 0)
+    const gross = done.reduce((s, o) => s + Number(o.amount ?? 0), 0)
     return {
       total: rows.length,
       pending: rows.filter((o) => o.status === 'pending').length,
-      confirmed: rows.filter((o) => o.status === 'confirmed').length,
-      net: rows
-        .filter((o) => o.status === 'confirmed' && o.confirmed_at && new Date(o.confirmed_at) >= mStart)
-        .reduce((s, o) => s + Number(o.company_amount || 0), 0),
+      confirmed: done.length,
+      sales,
+      discount: sales - gross,
+      gross,
     }
   }, [rows])
 
@@ -169,6 +231,60 @@ export default function Orders() {
     setDel(null)
     setBulkAction('')
     fetchRows()
+  }
+
+  const exportCsv = () => {
+    const m = (v) => (v == null ? '' : fmtMoney(v))
+    const headers = [
+      { key: 'id', label: 'ID' },
+      { key: 'created', label: 'Created' },
+      { key: 'status', label: 'Status' },
+      { key: 'account', label: 'Account' },
+      { key: 'appt_date', label: 'Appointment Date' },
+      { key: 'appt_time', label: 'Appointment Time' },
+      { key: 'customer_id', label: 'Customer ID' },
+      { key: 'customer', label: 'Customer' },
+      { key: 'customer_phone', label: 'Customer Phone' },
+      { key: 'client', label: 'Client' },
+      { key: 'branch', label: 'Branch' },
+      { key: 'city', label: 'City' },
+      { key: 'package', label: 'Package' },
+      { key: 'sales', label: 'Sales' },
+      { key: 'discount', label: 'Discount' },
+      { key: 'gross', label: 'Gross (customer pays)' },
+      { key: 'client_gets', label: 'Client Gets' },
+      { key: 'agent_gets', label: 'Agent Gets' },
+      { key: 'company_net', label: 'GraphicSpark Net' },
+      { key: 'agent', label: 'Agent' },
+      { key: 'confirmed', label: 'Confirmed' },
+      { key: 'notes', label: 'Notes' },
+    ]
+    const data = filtered.map((o) => ({
+      id: o.ref_no,
+      created: fmtDate(o.created_at),
+      status: cap(o.status),
+      account: o.account?.name ?? '',
+      appt_date: o.scheduled_date ? fmtDate(o.scheduled_date) : '',
+      appt_time: o.scheduled_time ? slotLabel(o.scheduled_time) : '',
+      customer_id: o.customer?.ref_no ?? '',
+      customer: o.customer?.full_name ?? '',
+      customer_phone: o.customer?.phone ? formatPkPhone(o.customer.phone) : '',
+      client: o.client?.company_name ?? '',
+      branch: o.branch?.branch_name ?? '',
+      city: o.branch?.city ?? '',
+      package: o.package_name || o.service || '',
+      sales: m(o.list_amount ?? o.amount),
+      discount: discountText(o),
+      gross: m(o.amount),
+      client_gets: m(o.client_amount),
+      agent_gets: m(o.agent_amount),
+      company_net: m(o.company_amount),
+      agent: o.agent?.full_name ?? '',
+      confirmed: o.confirmed_at ? fmtDateTime(o.confirmed_at) : '',
+      notes: o.notes ?? '',
+    }))
+    downloadCsv(`orders_${new Date().toISOString().slice(0, 10)}.csv`, toCsv(headers, data))
+    toast.success(`Exported ${data.length} order(s)`)
   }
 
   const toggle = (id) =>
@@ -197,6 +313,7 @@ export default function Orders() {
 
   const columns = [
     { key: 'ref', header: 'ID', render: (o) => o.ref_no },
+    { key: 'created', header: 'Created', render: (o) => fmtDate(o.created_at) },
     {
       key: 'customer',
       header: 'Customer',
@@ -217,8 +334,21 @@ export default function Orders() {
         </div>
       ),
     },
+    { key: 'account', header: 'Account', render: (o) => o.account?.name ?? '—' },
+    {
+      key: 'appt_date',
+      header: 'Appt date',
+      render: (o) => (o.scheduled_date ? fmtDate(o.scheduled_date) : '—'),
+    },
+    {
+      key: 'appt_time',
+      header: 'Appt time',
+      render: (o) => (o.scheduled_time ? slotLabel(o.scheduled_time) : '—'),
+    },
     { key: 'package', header: 'Package', render: (o) => o.package_name || o.service },
-    { key: 'amount', header: 'Amount', render: (o) => fmtMoney(o.amount) },
+    { key: 'sales', header: 'Sales', render: (o) => fmtMoney(o.list_amount ?? o.amount) },
+    { key: 'discount', header: 'Discount', render: (o) => discountText(o) || '—' },
+    { key: 'gross', header: 'Gross', render: (o) => fmtMoney(o.amount) },
     { key: 'agent', header: 'Agent', render: (o) => o.agent?.full_name ?? '—' },
     {
       key: 'status',
@@ -255,6 +385,9 @@ export default function Orders() {
           <button className="icon-btn" onClick={fetchRows} title="Refresh">
             <RefreshCw size={15} />
           </button>
+          <button className="btn btn-ghost btn-square btn-sm" onClick={exportCsv}>
+            <Download size={14} /> Export
+          </button>
           {canAdd && (
             <button className="btn" onClick={() => setAddOpen(true)}>
               <Plus size={15} /> Add Order
@@ -268,7 +401,9 @@ export default function Orders() {
           { key: 't', label: 'Total', value: stats.total, icon: ClipboardList },
           { key: 'p', label: 'Pending', value: stats.pending, icon: Clock },
           { key: 'c', label: 'Confirmed', value: stats.confirmed, icon: BadgeCheck },
-          { key: 'n', label: 'Net this month', value: fmtMoney(stats.net), icon: Wallet },
+          { key: 's', label: 'Sales', value: fmtMoney(stats.sales), icon: Wallet },
+          { key: 'd', label: 'Discount', value: fmtMoney(stats.discount), icon: Tag },
+          { key: 'g', label: 'Gross', value: fmtMoney(stats.gross), icon: Coins },
         ]}
       />
 
@@ -289,31 +424,71 @@ export default function Orders() {
               <option value="confirmed">Confirmed</option>
               <option value="cancelled">Cancelled</option>
             </select>
-            <select className="filter-select" value={clientF} onChange={(e) => { setClientF(e.target.value); resetPage() }}>
-              <option value="all">Any client</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.ref_no}>
-                  {c.company_name}
-                </option>
-              ))}
-            </select>
+            <div style={{ minWidth: 200 }}>
+              <SearchSelect
+                value={clientF}
+                onChange={(v) => { setClientF(v || 'all'); resetPage() }}
+                placeholder="Any client"
+                options={[
+                  { value: 'all', label: 'Any client' },
+                  ...clients.map((c) => ({
+                    value: String(c.ref_no),
+                    label: c.company_name,
+                    sub: String(c.ref_no),
+                  })),
+                ]}
+              />
+            </div>
+            <div style={{ minWidth: 180 }}>
+              <SearchSelect
+                value={accountF}
+                onChange={(v) => { setAccountF(v || 'all'); resetPage() }}
+                placeholder="Any account"
+                options={[
+                  { value: 'all', label: 'Any account' },
+                  ...accounts.map((a) => ({
+                    value: String(a.ref_no),
+                    label: a.name,
+                    sub: String(a.ref_no),
+                  })),
+                ]}
+              />
+            </div>
+            <label className="check-line">
+              <input
+                type="checkbox"
+                checked={mineOnly}
+                onChange={(e) => { setMineOnly(e.target.checked); resetPage() }}
+              />
+              My orders only
+            </label>
           </>
         }
         advanced={
           <>
             <div className="field">
-              <label htmlFor="f-from">From</label>
+              <label htmlFor="f-from">Created from</label>
               <input id="f-from" type="date" className="input" value={from} onChange={(e) => { setFrom(e.target.value); resetPage() }} />
             </div>
             <div className="field">
-              <label htmlFor="f-to">To</label>
+              <label htmlFor="f-to">Created to</label>
               <input id="f-to" type="date" className="input" value={to} onChange={(e) => { setTo(e.target.value); resetPage() }} />
             </div>
-            <div className="field" style={{ justifyContent: 'flex-end' }}>
-              <label className="check-line">
-                <input type="checkbox" checked={mineOnly} onChange={(e) => { setMineOnly(e.target.checked); resetPage() }} />
-                My orders only
-              </label>
+            <div className="field">
+              <label htmlFor="f-appt-from">Appointment from</label>
+              <input id="f-appt-from" type="date" className="input" value={apptFrom} onChange={(e) => { setApptFrom(e.target.value); resetPage() }} />
+            </div>
+            <div className="field">
+              <label htmlFor="f-appt-to">Appointment to</label>
+              <input id="f-appt-to" type="date" className="input" value={apptTo} onChange={(e) => { setApptTo(e.target.value); resetPage() }} />
+            </div>
+            <div className="field">
+              <label>Appt time from</label>
+              <TimeSlotPicker value={apptTimeFrom} onChange={(v) => { setApptTimeFrom(v); resetPage() }} />
+            </div>
+            <div className="field">
+              <label>Appt time to</label>
+              <TimeSlotPicker value={apptTimeTo} onChange={(v) => { setApptTimeTo(v); resetPage() }} />
             </div>
           </>
         }
@@ -350,6 +525,7 @@ export default function Orders() {
       {addOpen && (
         <AddOrderModal
           clients={clients}
+          accounts={accounts}
           agentId={profile?.id}
           canAddCustomer={can('customers', 'add')}
           onClose={() => setAddOpen(false)}
@@ -366,6 +542,7 @@ export default function Orders() {
           canEdit={canEdit}
           canConfirm={canConfirm}
           clients={clients}
+          accounts={accounts}
           onClose={() => setViewId(null)}
           onChanged={fetchRows}
         />
@@ -390,13 +567,16 @@ export default function Orders() {
 }
 
 // ── Add order ─────────────────────────────────────────────────────────────
-function AddOrderModal({ clients, agentId, canAddCustomer, onClose, onDone }) {
+function AddOrderModal({ clients, accounts, agentId, canAddCustomer, onClose, onDone }) {
   const [customers, setCustomers] = useState([])
   const [f, setF] = useState({
+    account_id: '',
     client_id: '',
     branch_id: '',
     package_id: '',
     customer_id: '',
+    scheduled_date: '',
+    scheduled_time: '',
     discount_kind: 'none',
     discount_value: '',
     notes: '',
@@ -475,6 +655,7 @@ function AddOrderModal({ clients, agentId, canAddCustomer, onClose, onDone }) {
   const submit = async (e) => {
     e.preventDefault()
     setErr('')
+    if (!f.account_id) return setErr('Pick an account')
     if (!f.client_id) return setErr('Pick a client')
     if (branches.length > 1 && !f.branch_id) return setErr('Pick a branch')
     if (!f.package_id) return setErr('Pick a package')
@@ -489,12 +670,15 @@ function AddOrderModal({ clients, agentId, canAddCustomer, onClose, onDone }) {
 
     setBusy(true)
     const { error } = await supabase.from('orders').insert({
+      account_id: f.account_id,
       customer_id: f.customer_id,
       client_id: f.client_id,
       branch_id: f.branch_id || branches[0]?.id || null,
       package_id: f.package_id,
       agent_id: agentId,
       created_by: agentId,
+      scheduled_date: f.scheduled_date || null,
+      scheduled_time: f.scheduled_time || null,
       discount_kind: f.discount_kind,
       discount_value: f.discount_kind === 'none' ? 0 : Number(f.discount_value) || 0,
       notes: f.notes.trim() || null,
@@ -510,6 +694,19 @@ function AddOrderModal({ clients, agentId, canAddCustomer, onClose, onDone }) {
     <Modal open onClose={onClose} title="Add order" width={520}>
       <form className="modal-form" onSubmit={submit}>
         {err && <div className="modal-error">{err}</div>}
+
+        <div className="field">
+          <label>Account *</label>
+          <SearchSelect
+            value={f.account_id}
+            onChange={(v) => set('account_id', v)}
+            placeholder={accounts.length ? 'Pick an account…' : 'No accounts yet'}
+            options={accounts.map((a) => ({ value: a.id, label: `${a.ref_no} · ${a.name}` }))}
+          />
+          {accounts.length === 0 && (
+            <span className="field-hint">Add an account on the Accounts page first.</span>
+          )}
+        </div>
 
         <div className="field">
           <label>Client *</label>
@@ -635,9 +832,16 @@ function AddOrderModal({ clients, agentId, canAddCustomer, onClose, onDone }) {
           )}
         </div>
 
+        <WhenFields
+          date={f.scheduled_date}
+          time={f.scheduled_time}
+          onDate={(v) => set('scheduled_date', v)}
+          onTime={(v) => set('scheduled_time', v)}
+        />
+
         {f.package_id && (
           <div className="split-box">
-            <div className="split-row"><span>Package price</span><b>{fmtMoney(listAmt)}</b></div>
+            <div className="split-row"><span>Sales</span><b>{fmtMoney(listAmt)}</b></div>
             <div className="field-row" style={{ marginTop: 8 }}>
               <div className="field">
                 <label>Discount</label>
@@ -668,7 +872,7 @@ function AddOrderModal({ clients, agentId, canAddCustomer, onClose, onDone }) {
             {discAmt > 0 && (
               <div className="split-row"><span>Discount</span><b>− {fmtMoney(discAmt)}</b></div>
             )}
-            <div className="split-row total"><span>Customer pays</span><b>{fmtMoney(payAmt)}</b></div>
+            <div className="split-row total"><span>Gross (customer pays)</span><b>{fmtMoney(payAmt)}</b></div>
           </div>
         )}
 
@@ -693,7 +897,7 @@ function AddOrderModal({ clients, agentId, canAddCustomer, onClose, onDone }) {
 }
 
 // ── Order detail / confirm / edit ─────────────────────────────────────────
-function OrderDetailModal({ order, canEdit, canConfirm, clients, onClose, onChanged }) {
+function OrderDetailModal({ order, canEdit, canConfirm, clients, accounts, onClose, onChanged }) {
   const [mode, setMode] = useState('view') // view | edit
   const [busy, setBusy] = useState(false)
 
@@ -724,6 +928,7 @@ function OrderDetailModal({ order, canEdit, canConfirm, clients, onClose, onChan
       <EditOrderModal
         order={order}
         clients={clients}
+        accounts={accounts}
         onCancel={() => setMode('view')}
         onDone={() => {
           setMode('view')
@@ -737,13 +942,16 @@ function OrderDetailModal({ order, canEdit, canConfirm, clients, onClose, onChan
     <Modal open onClose={onClose} title={`Order ${order.ref_no}`} width={480}>
       <div>
         <Row label="Status" value={<span className={`status-text ${statusClass(order.status)}`}>{cap(order.status)}</span>} />
+        <Row label="Account" value={order.account ? `${order.account.ref_no} · ${order.account.name}` : '—'} />
         <Row label="Customer" value={`${order.customer?.ref_no} · ${order.customer?.full_name ?? '—'}`} />
         <Row label="Client" value={`${order.client?.ref_no} · ${order.client?.company_name ?? '—'}`} />
         <Row label="Branch" value={order.branch ? `${order.branch.branch_name} · ${order.branch.city}` : '—'} />
+        <Row label="Date" value={order.scheduled_date ? fmtDate(order.scheduled_date) : '—'} />
+        <Row label="Time" value={order.scheduled_time ? slotLabel(order.scheduled_time) : '—'} />
         <Row label="Package" value={order.package_name || order.service} />
         {order.list_amount != null && order.discount_kind && order.discount_kind !== 'none' ? (
           <>
-            <Row label="Package price" value={fmtMoney(order.list_amount)} />
+            <Row label="Sales" value={fmtMoney(order.list_amount)} />
             <Row
               label="Discount"
               value={
@@ -752,10 +960,10 @@ function OrderDetailModal({ order, canEdit, canConfirm, clients, onClose, onChan
                   : `${fmtMoney(order.discount_value)} off`
               }
             />
-            <Row label="Customer pays" value={fmtMoney(order.amount)} />
+            <Row label="Gross (customer pays)" value={fmtMoney(order.amount)} />
           </>
         ) : (
-          <Row label="Amount" value={fmtMoney(order.amount)} />
+          <Row label="Gross" value={fmtMoney(order.amount)} />
         )}
         <Row label="Agent" value={order.agent?.full_name} />
         <Row label="Notes" value={order.notes} />
@@ -789,7 +997,7 @@ function OrderDetailModal({ order, canEdit, canConfirm, clients, onClose, onChan
   )
 }
 
-function EditOrderModal({ order, clients, onCancel, onDone }) {
+function EditOrderModal({ order, clients, accounts, onCancel, onDone }) {
   const [customers, setCustomers] = useState([])
   const [f, setF] = useState(() => {
     const cl = order.client?.ref_no ? clients.find((c) => c.ref_no === order.client.ref_no) : null
@@ -799,10 +1007,13 @@ function EditOrderModal({ order, clients, onCancel, onDone }) {
       brs.find((b) => b.is_primary) ||
       brs[0]
     return {
+      account_id: order.account_id ?? '',
       client_id: cl?.id ?? '',
       branch_id: br?.id ?? '',
       customer_id: '',
       package_id: order.package_id ?? '',
+      scheduled_date: order.scheduled_date ?? '',
+      scheduled_time: toSlotValue(order.scheduled_time),
       discount_kind: order.discount_kind ?? 'none',
       discount_value: order.discount_value ? String(order.discount_value) : '',
       notes: order.notes ?? '',
@@ -858,6 +1069,7 @@ function EditOrderModal({ order, clients, onCancel, onDone }) {
   const submit = async (e) => {
     e.preventDefault()
     setErr('')
+    if (!f.account_id) return setErr('Pick an account')
     if (!f.client_id || !f.branch_id || !f.customer_id) return setErr('Client, branch and customer are required')
     if (!f.package_id) return setErr('Pick a package')
     if (f.discount_kind !== 'none') {
@@ -872,10 +1084,13 @@ function EditOrderModal({ order, clients, onCancel, onDone }) {
     const { error } = await supabase
       .from('orders')
       .update({
+        account_id: f.account_id,
         client_id: f.client_id,
         branch_id: f.branch_id,
         customer_id: f.customer_id,
         package_id: f.package_id,
+        scheduled_date: f.scheduled_date || null,
+        scheduled_time: f.scheduled_time || null,
         discount_kind: f.discount_kind,
         discount_value: f.discount_kind === 'none' ? 0 : Number(f.discount_value) || 0,
         notes: f.notes.trim() || null,
@@ -891,6 +1106,14 @@ function EditOrderModal({ order, clients, onCancel, onDone }) {
     <Modal open onClose={onCancel} title={`Edit order ${order.ref_no}`} width={520}>
       <form className="modal-form" onSubmit={submit}>
         {err && <div className="modal-error">{err}</div>}
+        <div className="field">
+          <label>Account *</label>
+          <SearchSelect
+            value={f.account_id}
+            onChange={(v) => set('account_id', v)}
+            options={accounts.map((a) => ({ value: a.id, label: `${a.ref_no} · ${a.name}` }))}
+          />
+        </div>
         <div className="field">
           <label>Client *</label>
           <SearchSelect
@@ -948,7 +1171,7 @@ function EditOrderModal({ order, clients, onCancel, onDone }) {
         </div>
         {f.package_id && (
           <div className="split-box">
-            <div className="split-row"><span>Package price</span><b>{fmtMoney(listAmt)}</b></div>
+            <div className="split-row"><span>Sales</span><b>{fmtMoney(listAmt)}</b></div>
             <div className="field-row" style={{ marginTop: 8 }}>
               <div className="field">
                 <label>Discount</label>
@@ -974,9 +1197,15 @@ function EditOrderModal({ order, clients, onCancel, onDone }) {
             {discAmt > 0 && (
               <div className="split-row"><span>Discount</span><b>− {fmtMoney(discAmt)}</b></div>
             )}
-            <div className="split-row total"><span>Customer pays</span><b>{fmtMoney(payAmt)}</b></div>
+            <div className="split-row total"><span>Gross (customer pays)</span><b>{fmtMoney(payAmt)}</b></div>
           </div>
         )}
+        <WhenFields
+          date={f.scheduled_date}
+          time={f.scheduled_time}
+          onDate={(v) => set('scheduled_date', v)}
+          onTime={(v) => set('scheduled_time', v)}
+        />
         <div className="field">
           <label>Notes (optional)</label>
           <textarea className="textarea" value={f.notes} onChange={(e) => set('notes', e.target.value)} />

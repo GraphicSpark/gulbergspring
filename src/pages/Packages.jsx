@@ -1,20 +1,25 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
-import { History, PackageOpen, Pencil, Plus, RefreshCw } from 'lucide-react'
+import { Copy, History, PackageOpen, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/useAuth'
 import { fmtDateTime, fmtMoney } from '../lib/format'
+import { dbErrorMessage } from '../lib/errors'
 import Modal from '../components/Modal'
+import ConfirmDelete from '../components/ConfirmDelete'
+import BulletTextarea from '../components/BulletTextarea'
 import SearchSelect from '../components/SearchSelect'
 import DataTable from '../components/data/DataTable'
+import BulkBar from '../components/data/BulkBar'
 
 const rateText = (kind, value) =>
   kind === 'percent' ? `${value}% of order` : `${fmtMoney(value)} (fixed)`
 
 export default function Packages() {
   const { can } = useAuth()
-  const canView = can('clients', 'view')
-  const canEdit = can('clients', 'edit')
+  const canView = can('packages', 'view')
+  const canEdit = can('packages', 'edit')
+  const canDelete = can('packages', 'delete')
 
   const [clients, setClients] = useState([])
   const [clientId, setClientId] = useState('')
@@ -23,6 +28,12 @@ export default function Packages() {
 
   const [formPkg, setFormPkg] = useState(null) // pkg row | 'new' | null
   const [historyPkg, setHistoryPkg] = useState(null)
+  const [copyRows, setCopyRows] = useState(null) // { rows: [...] } | null
+  const [del, setDel] = useState(null) // { kind: 'one'|'bulk', row?, ids? } | null
+  const [delBusy, setDelBusy] = useState(false)
+
+  const [selected, setSelected] = useState(new Set())
+  const [bulkAction, setBulkAction] = useState('')
 
   useEffect(() => {
     supabase
@@ -33,6 +44,8 @@ export default function Packages() {
   }, [])
 
   const loadPackages = useCallback(async (cid) => {
+    setSelected(new Set())
+    setBulkAction('')
     if (!cid) {
       setPackages([])
       return
@@ -65,10 +78,71 @@ export default function Packages() {
     loadPackages(clientId)
   }
 
+  const toggle = (id) =>
+    setSelected((prev) => {
+      const n = new Set(prev)
+      if (n.has(id)) n.delete(id)
+      else n.add(id)
+      return n
+    })
+  const toggleAll = () =>
+    setSelected((prev) => (prev.size === packages.length ? new Set() : new Set(packages.map((p) => p.id))))
+
+  const doDelete = async () => {
+    if (!del) return
+    setDelBusy(true)
+    const ids = del.kind === 'bulk' ? [...del.ids] : [del.row.id]
+    const { error } = await supabase.from('client_packages').delete().in('id', ids)
+    setDelBusy(false)
+    if (error) return toast.error(dbErrorMessage(error, 'package'))
+    toast.success(`${ids.length} package(s) deleted`)
+    setDel(null)
+    loadPackages(clientId)
+  }
+
+  const bulkDeactivate = async () => {
+    const ids = [...selected]
+    const { error } = await supabase.from('client_packages').update({ is_active: false }).in('id', ids)
+    if (error) return toast.error(error.message)
+    toast.success(`${ids.length} package(s) deactivated`)
+    loadPackages(clientId)
+  }
+
+  const applyBulk = () => {
+    if (!selected.size) return
+    if (bulkAction === 'delete') setDel({ kind: 'bulk', ids: selected })
+    else if (bulkAction === 'deactivate') bulkDeactivate()
+    else if (bulkAction === 'copy') {
+      setCopyRows({ rows: packages.filter((p) => selected.has(p.id)) })
+    }
+  }
+
+  const bulkActions = [
+    ...(canEdit ? [{ value: 'deactivate', label: 'Deactivate selected' }] : []),
+    ...(canEdit ? [{ value: 'copy', label: 'Copy to another client…' }] : []),
+    ...(canDelete ? [{ value: 'delete', label: 'Delete selected' }] : []),
+  ]
+
   const columns = useMemo(
     () => [
       { key: 'ref', header: 'ID', render: (p) => p.ref_no },
-      { key: 'name', header: 'Package', render: (p) => <span className="primary">{p.name}</span> },
+      {
+        key: 'name',
+        header: 'Package',
+        render: (p) => (
+          <div className="stack">
+            <span className="primary">{p.name}</span>
+            {p.description && (
+              <span className="secondary" title={p.description}>
+                {(() => {
+                  const first = p.description.split('\n')[0].replace(/^•\s*/, '').trim()
+                  return first.length > 64 ? `${first.slice(0, 64)}…` : first
+                })()}
+              </span>
+            )}
+          </div>
+        ),
+      },
       { key: 'price', header: 'Price', render: (p) => fmtMoney(p.price) },
       { key: 'rate', header: 'Client gets', render: (p) => rateText(p.commission_kind, p.commission_value) },
       {
@@ -104,11 +178,21 @@ export default function Packages() {
                 <Pencil size={13} />
               </button>
             )}
+            {canEdit && (
+              <button title="Copy to another client" onClick={() => setCopyRows({ rows: [p] })}>
+                <Copy size={13} />
+              </button>
+            )}
+            {canDelete && (
+              <button className="danger" title="Delete" onClick={() => setDel({ kind: 'one', row: p })}>
+                <Trash2 size={13} />
+              </button>
+            )}
           </div>
         ),
       },
     ],
-    [canEdit], // eslint-disable-line react-hooks/exhaustive-deps
+    [canEdit, canDelete], // eslint-disable-line react-hooks/exhaustive-deps
   )
 
   if (!canView) {
@@ -158,15 +242,33 @@ export default function Packages() {
           <p>Pick a client to see its packages.</p>
         </div>
       ) : (
-        <DataTable
-          columns={columns}
-          rows={packages}
-          rowKey={(p) => p.id}
-          loading={loading}
-          emptyLabel={`No packages for ${client?.company_name ?? 'this client'} yet — add one so orders can use it.`}
-          title={client ? `${client.company_name} · packages` : 'Packages'}
-          subtitle={`${packages.length}`}
-        />
+        <>
+          {bulkActions.length > 0 && (
+            <BulkBar
+              count={selected.size}
+              value={bulkAction}
+              onValue={setBulkAction}
+              onApply={applyBulk}
+              onClear={() => setSelected(new Set())}
+              busy={delBusy}
+              actions={bulkActions}
+            />
+          )}
+
+          <DataTable
+            columns={columns}
+            rows={packages}
+            rowKey={(p) => p.id}
+            loading={loading}
+            emptyLabel={`No packages for ${client?.company_name ?? 'this client'} yet — add one so orders can use it.`}
+            selectable={bulkActions.length > 0}
+            selected={selected}
+            onToggle={toggle}
+            onToggleAll={toggleAll}
+            title={client ? `${client.company_name} · packages` : 'Packages'}
+            subtitle={`${packages.length}`}
+          />
+        </>
       )}
 
       {formPkg && (
@@ -181,10 +283,109 @@ export default function Packages() {
         />
       )}
 
-      {historyPkg && (
-        <HistoryModal pkg={historyPkg} onClose={() => setHistoryPkg(null)} />
+      {historyPkg && <HistoryModal pkg={historyPkg} onClose={() => setHistoryPkg(null)} />}
+
+      {copyRows && (
+        <CopyModal
+          rows={copyRows.rows}
+          clients={clients}
+          fromClientId={clientId}
+          onClose={() => setCopyRows(null)}
+          onDone={() => {
+            setCopyRows(null)
+            loadPackages(clientId)
+          }}
+        />
+      )}
+
+      {del && (
+        <ConfirmDelete
+          open
+          title={del.kind === 'bulk' ? 'Delete packages' : 'Delete package'}
+          message={
+            del.kind === 'bulk'
+              ? `This permanently deletes ${del.ids.size} package(s). Existing orders keep their frozen rate.`
+              : `This permanently deletes "${del.row.name}". Existing orders keep their frozen rate.`
+          }
+          busy={delBusy}
+          onConfirm={doDelete}
+          onClose={() => setDel(null)}
+        />
       )}
     </div>
+  )
+}
+
+// ── Copy a package (or several) to another client ────────────────────────
+function CopyModal({ rows, clients, fromClientId, onClose, onDone }) {
+  const [targetId, setTargetId] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const options = clients
+    .filter((c) => c.id !== fromClientId)
+    .map((c) => ({ value: c.id, label: `${c.ref_no} · ${c.company_name}` }))
+  const target = clients.find((c) => c.id === targetId)
+
+  const submit = async () => {
+    setErr('')
+    if (!targetId) return setErr('Pick the client to copy to')
+    setBusy(true)
+    const { error } = await supabase.from('client_packages').insert(
+      rows.map((r) => ({
+        client_id: targetId,
+        name: r.name,
+        price: r.price,
+        commission_kind: r.commission_kind,
+        commission_value: r.commission_value,
+        description: r.description,
+        is_active: r.is_active,
+      })),
+    )
+    setBusy(false)
+    if (error) {
+      return setErr(
+        error.code === '23505'
+          ? `${target?.company_name ?? 'That client'} already has an active package with that name. Rename or deactivate it there first.`
+          : dbErrorMessage(error, 'package'),
+      )
+    }
+    toast.success(`${rows.length} package(s) copied to ${target?.company_name}`)
+    onDone()
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Copy package to another client" width={440}>
+      <div className="modal-form">
+        {err && <div className="modal-error">{err}</div>}
+
+        <p className="field-hint">
+          Copying{' '}
+          <b>{rows.length === 1 ? `"${rows[0].name}"` : `${rows.length} packages`}</b>{' '}
+          (name, price and rate) to another client. The original stays where it is; this
+          creates a new, independent package for the other client.
+        </p>
+
+        <div className="field">
+          <label>Copy to *</label>
+          <SearchSelect
+            value={targetId}
+            onChange={setTargetId}
+            placeholder="Pick a client…"
+            options={options}
+          />
+        </div>
+
+        <div className="modal-actions">
+          <button type="button" className="btn btn-ghost btn-square" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-square" onClick={submit} disabled={busy}>
+            {busy ? 'Copying…' : 'Copy'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
@@ -194,6 +395,7 @@ function PackageForm({ pkg, clientId, onClose, onDone }) {
   const [price, setPrice] = useState(String(pkg?.price ?? ''))
   const [kind, setKind] = useState(pkg?.commission_kind ?? 'fixed')
   const [value, setValue] = useState(String(pkg?.commission_value ?? ''))
+  const [desc, setDesc] = useState(pkg?.description ?? '')
   const [active, setActive] = useState(pkg ? pkg.is_active : true)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
@@ -213,6 +415,7 @@ function PackageForm({ pkg, clientId, onClose, onDone }) {
       price: pr,
       commission_kind: kind,
       commission_value: v,
+      description: desc.trim() || null,
       is_active: active,
     }
     const q = editing
@@ -273,6 +476,16 @@ function PackageForm({ pkg, clientId, onClose, onDone }) {
               placeholder={kind === 'percent' ? '40' : '5000'}
             />
           </div>
+        </div>
+        <div className="field">
+          <label htmlFor="pk-desc">Description (optional)</label>
+          <BulletTextarea
+            id="pk-desc"
+            value={desc}
+            onChange={setDesc}
+            rows={4}
+            placeholder={'What this package includes…\nClick "Bullet" to add list points'}
+          />
         </div>
         {editing && (
           <label className="check-line">

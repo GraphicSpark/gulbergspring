@@ -2,14 +2,24 @@
 
 ## Overview
 A **spa referral business** CRM. GraphicSpark sends walk-in **customers** to
-**client** spas (companies with branches) and keeps a margin per **order**:
-  every order picks one of the client's **packages** (each has a price) -> order amount
-  auto-fills from that price, minus an optional per-order discount -> customer pays `amount` ->
-  client is paid that package's rate (a fixed Rs or a % of amount) ->
-  GraphicSpark gross = amount - client cut -> the order's **agent** (its creator)
-  gets a fixed Rs or a % of that gross -> GraphicSpark net = gross - agent cut.
-The order snapshots the package rate at creation; the split is frozen when the
-order is **confirmed** (`orders.confirm` permission).
+**client** spas (companies with branches) and keeps a margin per **order**.
+Every order picks one of the client's **packages**. Money flow (P&L per order):
+
+    Sales     = package list price
+    Client cut= fixed Rs, or % of SALES   -> the client keeps this
+    GS gross  = Sales - Client cut         -> GraphicSpark's margin (pre-discount)
+    Discount  = optional per-order discount -> GraphicSpark absorbs it (client untouched)
+    GS net    = GS gross - Discount         -> what the CLIENT OWES GraphicSpark
+    Agent cut = fixed Rs, or % of GS net   -> GraphicSpark PAYS the agent this
+    Net       = GS net - Agent cut          -> what GraphicSpark keeps
+
+**The customer pays the CLIENT in cash at the spa** (`amount` = Sales - Discount).
+GraphicSpark never pays the client - it *collects from* the client (GS net) and
+*pays* the agent. The split is frozen when the order is **confirmed**
+(`orders.confirm`). `confirm_order()` stores `client_amount` (Client cut),
+`agent_amount` (Agent payable), `company_amount` (= Net); GS gross / GS net are
+derived. Legacy note: `client_kind/value` snapshot is per package; % is on SALES
+(`019_confirm_order_client_pct_on_sales.sql`, was previously on the discounted amount).
 
 GraphicSpark's internal CRM portal. Standalone project, **completely separate** from
 BlackDrivo (D:\BlackDrivoAdmin): its own git repo, GitHub remote, Supabase project,
@@ -21,7 +31,9 @@ BlackDrivo's Admin UI rules (region-wise pattern, no-icons, etc.) do NOT apply h
 - Supabase: https://fmfbjpblhqgrwqeswztw.supabase.co  (project ref `fmfbjpblhqgrwqeswztw`)
 
 ## Stack
-- React 19 + Vite (JavaScript / JSX)
+- React 19 + Vite (JavaScript / JSX). `recharts` for Dashboard charts.
+- Route pages are `React.lazy`-loaded (App.jsx) so recharts stays in the Dashboard chunk;
+  `<Suspense>` fallback is inside `Layout` so the sidebar stays put during a page load.
 - Supabase: Auth + Postgres + RLS. Client uses the anon key only.
 - Deploy: Vercel (separate project)
 
@@ -73,10 +85,12 @@ Reference source (read-only, for style only): `D:\BlackDrivoAdmin\src`.
   Active / hover nav item = **accent text + a 3px accent bar on the left edge**.
   NO filled "pill" background on the active item. lucide icons at `size={17}`.
   Component: `src/components/Sidebar.jsx` + `src/components/layout.css`.
-- **Date / range filters** (dashboard, list pages): flat **underline tabs** -
-  "All Time / Today / This Week / This Month" - active tab has a 2px accent
-  bottom-border and accent text. **Do NOT use pill-shaped filter chips.**
-  Component: `src/components/RangeTabs.jsx`; option sets in `src/lib/filters.js`.
+- **Date / range filters** (dashboard, all Finance ledgers + Settlements): flat
+  **underline tabs** - "All / Today / Week / Month", active tab has a 2px accent
+  bottom-border. **Do NOT use pill-shaped filter chips.** Component:
+  `src/components/RangeTabs.jsx`; `src/lib/filters.js` has `DATE_RANGES` +
+  `rangeFrom(key)` -> a 'YYYY-MM-DD' lower bound (Monday week start; '' = all).
+  Ledgers apply it on top of their custom From/To (intersection).
 - The full-pill radius stays for real CTA buttons only (`.btn`).
 
 ## CRM Portal Structure
@@ -89,13 +103,48 @@ Logout). On mobile a hamburger (top-left) opens the sidebar drawer.
 Component: `src/components/Topbar.jsx`.
 
 Left sidebar menu (grouped into sections - see UI conventions below):
-- (top)            Dashboard      - "Coming soon" placeholder for now, built later
+- (top)            Dashboard      - KPI cards (sparkline + vs-previous-period delta chip, NOT
+                    clickable) in Performance / Cash & collections / Breakdown / Bookings &
+                    customers / Activity sections. Range control `DASH_RANGES`
+                    (All / Today / 7d / 30d / 90d / This month / This quarter / YTD / Custom
+                    w/ two date inputs); `rangeWindow(key, custom)` -> `{from,to}`. Charts
+                    (recharts): sales/net area trend, forecast (run-rate to month/quarter/year
+                    end), status & money-split & new-vs-returning donuts, cash-flow composed
+                    (in/out bars + net line), receivables aging (FIFO per client, 0-30/31-60/
+                    61-90/90+), top accounts/clients/agents/packages bars, conversion funnel,
+                    weekday-x-slot heatmap (CSS grid), appointments-by-weekday. Activity lists.
+                    Money KPIs/charts only for `finance.view`. `src/lib/dashboard.js` does all
+                    the aggregation; `src/pages/Dashboard.jsx` + `dashboard.css`.
+                    Always visible (`dashboard` perm just gates the nav row).
 - Records:         Clients        - spa companies + their branches
 - Records:         Packages       - per-client service "menu"; each package has its own
                     rate (fixed Rs / % of order). Rate changes are logged. Nav-gated on
-                    `clients.view`, edits on `clients.edit`.
+                    `packages.view`, edits on `packages.edit`.
 - Records:         Customer       - walk-in customers
 - Records:         Orders         - customer -> client referral; every order picks a package
+                    AND an account
+- Account:         Accounts       - internal business units; every order is attributed to one.
+                    Account name + Account Manager (internal user) + Location. Admins manage;
+                    others get view.
+- Finance:         Financial Ledger - one dense row per CONFIRMED order, the P&L chain:
+                    **Sales - Client cut = GS gross ; GS gross - Discount = GS net (client
+                    owes us) ; GS net - Agent cut = Net.** + Account/Customer/Client/Package/
+                    Agent. Loss rows (net < 0) flagged red + "Losses only" filter. Summary
+                    cards = totals. CSV export. Gated on `finance`.
+- Finance:         Account / Agent / Client Ledger + Package Performance - the same numbers
+                    grouped/summed (shared `src/components/GroupedLedgerView.jsx`).
+                    **Agent Ledger** adds Owed / Paid / Outstanding (we owe the agent).
+                    **Client Ledger** adds Receivable / Received / Outstanding (client owes us).
+                    Both have a per-row **Settle** button (`finance.add`) -> `<SettlementModal>`
+                    (`src/components/SettlementModal.jsx`) pre-filled to that party + outstanding,
+                    writes to `payouts`, refreshes.
+- Finance:         Settlements (`src/pages/Settlements.jsx`) - record money IN from a client or
+                    money OUT to an agent (type / who / amount / date / method / note).
+                    Add/edit/delete need `finance.add|edit|delete` (admin only). Feeds the
+                    ledgers' Received/Paid columns. Backed by the `payouts` table (party
+                    'client' = money in, 'agent' = money out).
+                    `src/lib/ledger.js` = `LEDGER_SELECT` + `ledgerAmounts`
+                    (sales/client/gsGross/discount/gsNet/agent/net) + `addTotals`.
 - Administration:  User Management - internal staff list; Super Admin / Admin can
                     CREATE users, everyone else is read-only (view the user table)
 - Administration:  Role Access    - permission matrix per role (managed by Super Admin)
@@ -113,17 +162,22 @@ no custom roles without an `ALTER TYPE`).
 The UI reads permissions (never hard-codes role checks) except the super_admin bypass.
 
 ## Permission model - page x action, role-wise + user-wise (migration 2026-08-27)
-- **Pages**: `dashboard` (view), `clients`, `customers`, `orders`, `users`
-  (view/add/edit/delete), `roles` (view/edit). `orders` also has `confirm`.
+- **Pages**: `dashboard` (view), `clients`, `packages`, `customers`, `orders`, `accounts`,
+  `finance`, `users` (view/add/edit/delete), `roles` (view/edit). `orders` also has `confirm`.
+  `finance` add/edit/delete gate the Payouts page only (the ledgers are view-only).
   Catalogue: `src/lib/permissions.js` (`PERMISSION_PAGES`).
   On the `users` page, `delete` = "deactivate". `perm_action` enum now includes `confirm`.
+- **RULE - every navigable page has a Role Access row.** Only Profile is exempt (a user
+  always manages their own). Adding a page = (1) add to `PERMISSION_PAGES`, (2) seed
+  `role_permissions` for it in the same migration, (3) gate the nav item + page with
+  `can('<key>', ...)`, (4) point that table's RLS at `has_perm('<key>', ...)`.
 - `role_permissions (role, page, action, allowed)` - per-role defaults
 - `user_permissions (user_id, page, action, allowed)` - per-user override (wins over role)
 - `private.has_perm(page text, action perm_action)`: super_admin -> true;
   else user override, else role default, else false
 - `AuthContext.can(page, action)` is the single client gate; RLS on
-  clients/customers/orders/client_branches/client_packages calls `has_perm`.
-  Packages + the package log are gated on the `clients` page permission.
+  clients/customers/orders/client_branches (-> `clients`), client_packages + the package log
+  (-> `packages`), accounts (-> `accounts`) all call `has_perm`.
 - Role Access page: **By Role** and **By User** modes; both edit the matrix.
   Writes are super_admin-only (RLS `rp_super_admin` / `up_super_admin`).
 
@@ -157,21 +211,33 @@ Non-super callers cannot touch `super_admin`/`admin` accounts. Client wrapper:
   display-only (no FK uses it), shown as a plain number with no leading '#'.
   [010_shared_ref_no_sequence.sql, replaced the per-table identity sequences]
 - `customers`        - ref_no, full_name, phone, email, gender, dob, address, source, notes
-- `orders`           - ref_no, customer_id, client_id, branch_id, agent_id,
-                        package_id + package_name (snapshot), service (legacy, auto-filled
-                        from the package name), list_amount (snapshot of the package price),
+- `accounts`         - ref_no, name, manager_id (-> profiles), location, created_by. RLS on the
+                        `accounts` page permission. [013_accounts.sql]
+- `orders`           - ref_no, account_id (-> accounts, required in UI), customer_id, client_id,
+                        branch_id, agent_id, scheduled_date +
+                        scheduled_time (both optional; time is a 30-min slot picked from a
+                        grouped popover - `src/components/TimeSlotPicker.jsx`, list in
+                        `src/lib/slots.js`), package_id + package_name (snapshot),
+                        service (legacy, auto-filled from the package name), list_amount
+                        (snapshot of the package price),
                         discount_kind ('none'|'fixed'|'percent') + discount_value,
                         amount (DERIVED by the snapshot trigger = list_amount - discount),
                         status (pending|confirmed|cancelled), + frozen split
                         (client_amount / agent_amount / company_amount) set by `confirm_order()`.
-                        [005_orders.sql, 006_client_packages.sql, 007_package_price_discount.sql]
+                        The frozen split is NOT shown in the UI (order detail hides it).
+                        [005_orders.sql, 006_client_packages.sql, 007_package_price_discount.sql,
+                        011_orders_scheduled_at.sql, 012_orders_date_time_slot.sql]
 - `client_packages`  - ref_no, (client_id, name, price, commission_kind 'fixed'|'percent',
-                        commission_value, is_active). Per-client package menu; `price` is the
-                        sticker price that auto-fills the order amount. `commission_*` = what
-                        GraphicSpark pays the client for that package (a % is charged on the
-                        DISCOUNTED amount; fixed is unaffected by discount). Partial unique
-                        index on (client_id, lower(name)) where is_active.
-                        [006_client_packages.sql, 007_package_price_discount.sql]
+                        commission_value, description (optional free text, "• " bullet lines),
+                        is_active). Per-client package menu; `price` is the
+                        sticker price that auto-fills the order amount. `commission_*` = the
+                        client's cut it KEEPS from the cash for that package. A **% is charged
+                        on SALES (the list price), NOT the discounted amount** - the per-order
+                        discount is GraphicSpark's concession and never touches the client
+                        (fixed is likewise unaffected). Partial unique index on
+                        (client_id, lower(name)) where is_active.
+                        [006_client_packages.sql, 007_package_price_discount.sql,
+                        019_confirm_order_client_pct_on_sales.sql]
 - `client_package_log` - append-only; one row per rate change, written by the SECURITY DEFINER
                         trigger `log_client_package_change()` (old/new kind+value + auth.uid()).
 - **Order <-> package snapshot**: `trg_orders_snapshot` (BEFORE INSERT/UPDATE) copies the
@@ -181,9 +247,10 @@ Non-super callers cannot touch `super_admin`/`admin` accounts. Client wrapper:
   and `amount` is always server-derived (the client never sends it). `confirm_order()` uses
   the order's frozen `client_kind/value` (falls back to live client config only for legacy
   orders with no snapshot).
-- **Where each cut is configured**: client cut -> the **package** (Packages page); agent cut
-  -> the **agent's profile** (User Management -> Edit user), with an on/off switch
-  (`commission_active`); GraphicSpark -> automatic remainder, never set by hand.
+- **Where each cut is configured**: client cut (what the client KEEPS from the cash) -> the
+  **package** (Packages page); agent cut (what GraphicSpark PAYS the agent) -> the **agent's
+  profile** (User Management -> Edit user), with an on/off switch (`commission_active`);
+  GS gross / GS net (what the client OWES GraphicSpark) + net -> automatic, never set by hand.
 - `profiles` carries `commission_kind` ('fixed'|'percent') + `commission_value` = the agent's
   cut of the GS gross, plus `commission_active` (bool, default true) = an on/off switch: when
   false, `confirm_order()` gives the agent 0 and GraphicSpark keeps the whole cut. The switch
@@ -196,7 +263,7 @@ Non-super callers cannot touch `super_admin`/`admin` accounts. Client wrapper:
 - `user_permissions` - (user_id, page, action, allowed)  [new 2026-08-27]
 - `confirm_order(uuid)` - SECURITY DEFINER RPC, gated by `orders.confirm`, computes + freezes
   the commission split. (Supabase advisor flags it as user-executable - intentional.)
-- RLS on all 10 tables. `private` helper fns (not REST-exposed):
+- RLS on all 12 tables (incl. `payouts`). `private` helper fns (not REST-exposed):
   `is_admin()`, `current_user_role()`, `is_active_user()`, `has_perm(text, perm_action)`
 - Trigger `on_auth_user_created` auto-inserts a `profiles` row for every new auth user
 - Trigger `trg_profiles_protect` blocks role/is_active changes by a logged-in
@@ -232,32 +299,67 @@ Non-super callers cannot touch `super_admin`/`admin` accounts. Client wrapper:
 - [x] Profile page (`src/pages/Profile.jsx`) - own details + self-service password change (re-auths first)
 - [x] Customer page (`src/pages/Customers.jsx`) - View modal (-> Edit), type-DELETE confirm
       (`src/components/ConfirmDelete.jsx`), source + date filters, CSV import (+ sample) / export.
-      Fields: Name*, Contact no* (PK phone), Source*, Notes?. (email/gender/address DB columns
-      exist but are unused in the UI.)
-- [x] Reusable table kit: `src/components/data/` (DataTable, FilterBar, Pagination, BulkBar, StatCards)
+      Fields: Name*, Contact no* (phone), Source (optional), Notes?. (email/gender/address DB columns
+      exist but are unused in the UI.) **`customers.phone` is UNIQUE** (partial index,
+      015_customers_phone_unique.sql) - the Add/Edit form pre-checks + catches 23505
+      ("A customer with this number already exists"); CSV import skips already-registered
+      numbers; the Orders quick-add reuses the existing customer.
+- [x] Reusable table kit: `src/components/data/` (DataTable, FilterBar, Pagination, BulkBar, StatCards).
+      `<DataTable dense>` = tight spreadsheet rows (~23px) + gridlines + tabular-nums; used by the
+      Finance ledgers.
 - [x] Clients page (`src/pages/Clients.jsx`) - company list; View modal shows the company
       + its branches (add/edit/delete branch inline, one primary). Add Client creates the
       company + its primary branch in one form. Shows a Packages count column. CSV import
       (row=branch, grouped by company) / export (flattened). No commission fields (-> Packages).
 - [x] Packages page (`src/pages/Packages.jsx`) - pick a client -> its package list; add
-      unlimited packages, each with a **price** + its own fixed Rs / % client rate + active
-      toggle. History modal per package (from `client_package_log`). Gated on `clients` perm.
-- [x] Orders page (`src/pages/Orders.jsx`) - Add order (Client -> Branch -> **Package** ->
-      Customer; creator = agent). Amount auto-fills from the package price; a per-order
-      **discount** (none / fixed Rs / %) gives the final "customer pays" amount (amount is
-      never typed by hand). A client with no active package can't get orders. View modal:
-      Confirm (orders.confirm) -> `confirm_order` RPC freezes the split and shows it; Edit /
-      Cancel while pending. `<SearchSelect>` combobox. 8 routes, all real.
+      unlimited packages, each with a **price** + its own fixed Rs / % client rate + a
+      **description** (`<BulletTextarea>` - a "Bullet" button + Enter-continues-list) + active
+      toggle. Row actions: History, Edit, **Copy** (duplicate the package to another client -
+      original stays), Delete. Select-all + BulkBar: Deactivate / Copy / Delete selected.
+      History modal per package (from `client_package_log`). `orders.package_id` is
+      `on delete set null`, so deleting a package never errors and existing orders keep their
+      frozen rate. Gated on `packages` perm (delete needs `packages.delete`).
+- [x] Orders page (`src/pages/Orders.jsx`) - Add order (**Account** * -> Client -> Branch ->
+      **Package** -> Customer; creator = agent). Amount auto-fills from the package price; a
+      per-order **discount** (none / fixed Rs / %) gives the final "customer pays" amount
+      (amount is never typed by hand). A client with no active package can't get orders. View
+      modal: Confirm (orders.confirm) -> `confirm_order` RPC freezes the split (NOT shown);
+      Edit / Cancel while pending. `<SearchSelect>` combobox. 11 routes, all real. Table columns:
+      ID, Created, Customer, Client, Account, Appt date, Appt time, Package,
+      Sales, Discount, Gross, Agent, Status. Stat cards: Total, Pending, Confirmed, Sales,
+      Discount, Gross (last three = Σ over confirmed orders; **Sales** = Σ list_amount
+      (before discount), **Gross** = Σ amount (customer pays, after discount),
+      **Discount** = Sales − Gross). Main filter row: status, client, account (searchable
+      `<SearchSelect>`), "My orders only". Advanced: Created from/to, Appointment from/to,
+      Appt time from/to (TimeSlotPicker). CSV **export** (all columns incl. Account + the
+      frozen split) via `lib/csv`.
+- [x] Accounts page (`src/pages/Accounts.jsx`) - internal business units. Add Account:
+      name * / Account Manager * (internal-user `<SearchSelect>`) / Location *. Table
+      (ID, Account name, Account manager, Location, Added), stat cards (Total, This month),
+      searchable Account-name + Account-manager filters + Added date range.
+      Gated on the `accounts` permission.
+- [x] Finance section (`finance` perm, admin-only): `src/pages/FinancialLedger.jsx` (one row
+      per confirmed order - Order/Date/Account/Customer/Package + Sales/Discount/Gross/Client/
+      Agent/Net; account + date filters; CSV export) and `src/pages/AccountLedger.jsx` (those
+      numbers summed per account + grand-total cards). Shared: `src/lib/ledger.js`. Both
+      read-only, no new DB tables - just `orders` where status='confirmed'.
 - [x] Agent commission: User (agent) edit form - an on/off checkbox ("This agent earns
       commission on their orders") + type/value; goes through the `admin-users` EF `update`
       action (v5, adds `commission_active`). Client-level commission removed - each package
       carries its own rate.
+- [x] Friendly DB errors: `src/lib/errors.js` `dbErrorMessage(error, subject)` maps Postgres
+      23503 (FK - row still has orders) / 23505 (duplicate) to a plain sentence. Used in the
+      Clients / Customers / Accounts delete handlers (orders reference all three with
+      `on delete restrict`).
 
 ## Phone numbers - Pakistani mobile only
 `src/lib/phone.js` + `src/components/PkPhoneInput.jsx`. UI shows a fixed `+92`
 prefix; the user types the 10-digit local part which must match `/^3\d{9}$/`
 (starts with 3, exactly 10 digits). Stored as `+923XXXXXXXXX`, displayed as
 `+92 3XX XXXXXXX`. CSV import validates phones the same way and skips bad rows.
+`customers.phone` is unique (see the Customer page notes above).
+`src/components/PhoneLink.jsx` renders a stored phone as a formatted `tel:` link
+(tap-to-call) - used in the Customer table + view modal.
 
 ## Still to confirm
 - Customer fields (membership, preferred services)? Base fields for now.

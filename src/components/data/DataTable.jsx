@@ -21,6 +21,8 @@ export default function DataTable({
   subtitle,
   headerRight,
   onRowClick,
+  dense = false,
+  rowClassName,
 }) {
   const colSpan = columns.length + (selectable ? 1 : 0)
   const allChecked = selectable && rows.length > 0 && selected?.size === rows.length
@@ -38,7 +40,7 @@ export default function DataTable({
       )}
 
       <div className="data-table-scroll">
-        <table className="data-table">
+        <table className={`data-table${dense ? ' dense' : ''}`}>
           <thead>
             <tr>
               {selectable && (
@@ -78,10 +80,16 @@ export default function DataTable({
             ) : (
               rows.map((row) => {
                 const id = rowKey(row)
+                const cls = [
+                  selectable && selected?.has(id) ? 'selected' : '',
+                  rowClassName ? rowClassName(row) : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')
                 return (
                   <tr
                     key={id}
-                    className={selectable && selected?.has(id) ? 'selected' : undefined}
+                    className={cls || undefined}
                     onClick={onRowClick ? () => onRowClick(row) : undefined}
                     style={onRowClick ? { cursor: 'pointer' } : undefined}
                   >

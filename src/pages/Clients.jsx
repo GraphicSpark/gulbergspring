@@ -25,6 +25,7 @@ import {
   toStored,
 } from '../lib/phone'
 import { downloadCsv, parseCsv, toCsv } from '../lib/csv'
+import { dbErrorMessage } from '../lib/errors'
 import Modal from '../components/Modal'
 import ConfirmDelete from '../components/ConfirmDelete'
 import PkPhoneInput from '../components/PkPhoneInput'
@@ -210,7 +211,7 @@ export default function Clients() {
     const ids = del.kind === 'bulk' ? [...del.ids] : [del.row.id]
     const { error } = await supabase.from('clients').delete().in('id', ids)
     setDelBusy(false)
-    if (error) return toast.error(error.message)
+    if (error) return toast.error(dbErrorMessage(error, 'client'))
     toast.success(`${ids.length} client(s) deleted`)
     setDel(null)
     setBulkAction('')

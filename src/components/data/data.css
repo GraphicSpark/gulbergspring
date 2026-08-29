@@ -286,6 +286,47 @@ table.data-table {
   font-size: 13px;
 }
 
+/* ---------- dense variant: tight rows, row lines only (no column lines) ---------- */
+.data-table.dense thead th {
+  padding: 5px 10px;
+  font-size: 9.5px;
+  letter-spacing: 0.4px;
+  border-bottom: 1.5px solid var(--border);
+}
+
+.data-table.dense tbody td {
+  padding: 3px 10px;
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
+.data-table.dense thead th:first-child,
+.data-table.dense tbody td:first-child {
+  padding-left: 2px;
+}
+
+.data-table.dense tbody .stack {
+  gap: 0;
+}
+
+.data-table.dense .cell-empty {
+  padding: 28px 12px;
+}
+
+/* negative / loss rows */
+.data-table tbody tr.row-loss td:first-child {
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.data-table tbody tr.row-loss {
+  background: var(--danger-soft);
+}
+.data-table tbody tr.row-loss:hover {
+  background: var(--danger-soft);
+}
+
 .skeleton-line {
   height: 13px;
   width: 70%;
