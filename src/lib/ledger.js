@@ -22,12 +22,32 @@ export const LEDGER_SELECT = `
   client_kind, client_value, client_amount,
   agent_kind, agent_value, agent_amount, company_amount,
   package_name, service,
+  order_items ( package_id, package_name, unit_price, qty, line_total, client_kind, client_value ),
   account:account_id ( id, ref_no, name, manager:manager_id ( full_name ) ),
   customer:customer_id ( ref_no, full_name ),
   client:client_id ( id, ref_no, company_name ),
   branch:branch_id ( branch_name, city ),
   agent:agent_id ( id, full_name )
 `
+
+// A line's client cut - mirrors confirm_order()'s per-line SQL.
+// Fixed cut is per unit (× qty); a % is charged on the line's list total.
+export function lineClientCut(item) {
+  const total = Number(item.line_total ?? (Number(item.unit_price) || 0) * (Number(item.qty) || 1))
+  const val = Number(item.client_value) || 0
+  return item.client_kind === 'percent'
+    ? Math.round(total * val) / 100
+    : val * (Number(item.qty) || 1)
+}
+
+// "Massage x2, Facial" - the package summary shown in tables / CSV / search.
+export function packageSummary(o) {
+  const items = o.order_items ?? []
+  if (items.length === 0) return o.package_name || o.service || '—'
+  return items
+    .map((i) => `${i.package_name}${Number(i.qty) > 1 ? ` x${i.qty}` : ''}`)
+    .join(', ')
+}
 
 export function ledgerAmounts(o) {
   const sales = Number(o.list_amount ?? o.amount ?? 0)

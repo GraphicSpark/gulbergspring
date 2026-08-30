@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom'
 import {
   Building2,
   ClipboardList,
+  Gauge,
   IdCard,
   Landmark,
   LayoutDashboard,
@@ -39,8 +40,14 @@ const NAV_SECTIONS = [
       { to: '/account-ledger', label: 'Account Ledger', icon: ScrollText, page: 'finance' },
       { to: '/agent-ledger', label: 'Agent Ledger', icon: UserCog, page: 'finance' },
       { to: '/client-ledger', label: 'Client Ledger', icon: Building2, page: 'finance' },
-      { to: '/package-performance', label: 'Package Performance', icon: PackageOpen, page: 'finance' },
       { to: '/settlements', label: 'Settlements', icon: HandCoins, page: 'finance' },
+    ],
+  },
+  {
+    label: 'Performance',
+    items: [
+      { to: '/package-performance', label: 'Package Performance', icon: PackageOpen, page: 'performance' },
+      { to: '/agent-performance', label: 'Agent Performance', icon: Gauge, page: 'performance' },
     ],
   },
   {

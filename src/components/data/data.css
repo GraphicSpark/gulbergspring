@@ -370,6 +370,16 @@ table.data-table {
   border-color: var(--danger);
 }
 
+.row-actions button.ok {
+  color: var(--success);
+  border-color: rgba(30, 135, 75, 0.35);
+}
+.row-actions button.ok:hover {
+  color: #fff;
+  background: var(--success);
+  border-color: var(--success);
+}
+
 .row-actions button:disabled {
   opacity: 0.4;
   cursor: not-allowed;

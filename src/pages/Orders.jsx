@@ -18,10 +18,12 @@ import { useAuth } from '../context/useAuth'
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format'
 import { formatPkPhone, isValidPkMobile, pkPhoneError, toStored } from '../lib/phone'
 import { slotLabel, toSlotValue } from '../lib/slots'
+import { packageSummary } from '../lib/ledger'
 import { downloadCsv, toCsv } from '../lib/csv'
 import TimeSlotPicker from '../components/TimeSlotPicker'
 import Modal from '../components/Modal'
 import ConfirmDelete from '../components/ConfirmDelete'
+import ConfirmDialog from '../components/ConfirmDialog'
 import PkPhoneInput from '../components/PkPhoneInput'
 import SearchSelect from '../components/SearchSelect'
 import DataTable from '../components/data/DataTable'
@@ -40,6 +42,7 @@ const ORDER_SELECT = `
   client_kind, client_value, client_amount,
   agent_kind, agent_value, agent_amount, company_amount,
   confirmed_at,
+  order_items ( id, package_id, package_name, unit_price, qty, line_total, client_kind, client_value ),
   customer:customer_id ( ref_no, full_name, phone ),
   client:client_id ( ref_no, company_name ),
   branch:branch_id ( branch_name, city ),
@@ -78,6 +81,89 @@ function WhenFields({ date, time, onDate, onTime }) {
         <label>Time slot (optional)</label>
         <TimeSlotPicker value={time} onChange={onTime} />
       </div>
+    </div>
+  )
+}
+
+// running subtotal of a POS line list
+const linesTotal = (lines) =>
+  lines.reduce((s, l) => s + (Number(l.unit_price) || 0) * (Number(l.qty) || 1), 0)
+
+// POS-style package picker: pick a package -> it drops straight into the cart
+// below, each line with a qty stepper.
+function PackageLines({ lines, onChange, packages, disabled, emptyHint }) {
+  const used = new Set(lines.map((l) => l.package_id))
+  const available = packages.filter((p) => !used.has(p.id))
+
+  const addPackage = (id) => {
+    const p = packages.find((x) => x.id === id)
+    if (!p) return
+    onChange([
+      ...lines,
+      {
+        package_id: p.id,
+        package_name: p.name,
+        unit_price: Number(p.price) || 0,
+        client_kind: p.commission_kind,
+        client_value: p.commission_value,
+        qty: 1,
+      },
+    ])
+  }
+  const setQty = (i, q) =>
+    onChange(lines.map((l, idx) => (idx === i ? { ...l, qty: Math.max(1, q) } : l)))
+  const remove = (i) => onChange(lines.filter((_, idx) => idx !== i))
+
+  return (
+    <div className="pos-lines">
+      <SearchSelect
+        value=""
+        onChange={addPackage}
+        disabled={disabled || available.length === 0}
+        placeholder={
+          disabled
+            ? 'Pick a client first'
+            : available.length === 0
+              ? lines.length
+                ? 'All packages added'
+                : emptyHint || 'No active packages'
+              : 'Pick a package to add…'
+        }
+        options={available.map((p) => ({
+          value: p.id,
+          label: p.name,
+          sub:
+            `${fmtMoney(p.price)} · ` +
+            (p.commission_kind === 'percent'
+              ? `client ${p.commission_value}%`
+              : `client Rs ${Number(p.commission_value).toLocaleString('en-PK')}`),
+        }))}
+      />
+
+      {lines.length > 0 && (
+        <div className="pos-line-list">
+          {lines.map((l, i) => (
+            <div className="pos-line" key={l.package_id}>
+              <span className="pos-line-name">{l.package_name}</span>
+              <span className="pos-line-price">{fmtMoney(l.unit_price)}</span>
+              <div className="pos-qty">
+                <button type="button" onClick={() => setQty(i, l.qty - 1)} aria-label="Less">−</button>
+                <input
+                  type="number"
+                  min="1"
+                  value={l.qty}
+                  onChange={(e) => setQty(i, parseInt(e.target.value, 10) || 1)}
+                />
+                <button type="button" onClick={() => setQty(i, l.qty + 1)} aria-label="More">+</button>
+              </div>
+              <span className="pos-line-total">{fmtMoney((Number(l.unit_price) || 0) * l.qty)}</span>
+              <button type="button" className="pos-line-x" onClick={() => remove(i)} aria-label="Remove">
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -152,6 +238,19 @@ export default function Orders() {
 
   const viewOrder = rows.find((o) => o.id === viewId) || null
 
+  const [toConfirm, setToConfirm] = useState(null) // order awaiting the confirm popup
+  const [confirmBusy, setConfirmBusy] = useState(false)
+  const doConfirm = async () => {
+    if (!toConfirm) return
+    setConfirmBusy(true)
+    const { error } = await supabase.rpc('confirm_order', { p_order_id: toConfirm.id })
+    setConfirmBusy(false)
+    if (error) return toast.error(error.message)
+    toast.success(`Order ${toConfirm.ref_no} confirmed`)
+    setToConfirm(null)
+    fetchRows()
+  }
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     return rows.filter((o) => {
@@ -166,7 +265,7 @@ export default function Orders() {
       if (apptTimeFrom && (!o.scheduled_time || toSlotValue(o.scheduled_time) < apptTimeFrom)) return false
       if (apptTimeTo && (!o.scheduled_time || toSlotValue(o.scheduled_time) > apptTimeTo)) return false
       if (q) {
-        const hay = `${o.ref_no} ${o.customer?.full_name ?? ''} ${o.customer?.phone ?? ''} ${o.client?.company_name ?? ''} ${o.package_name ?? o.service ?? ''}`.toLowerCase()
+        const hay = `${o.ref_no} ${o.customer?.full_name ?? ''} ${o.customer?.phone ?? ''} ${o.client?.company_name ?? ''} ${packageSummary(o)}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       return true
@@ -272,7 +371,7 @@ export default function Orders() {
       client: o.client?.company_name ?? '',
       branch: o.branch?.branch_name ?? '',
       city: o.branch?.city ?? '',
-      package: o.package_name || o.service || '',
+      package: packageSummary(o),
       sales: m(o.list_amount ?? o.amount),
       discount: discountText(o),
       gross: m(o.amount),
@@ -345,7 +444,7 @@ export default function Orders() {
       header: 'Appt time',
       render: (o) => (o.scheduled_time ? slotLabel(o.scheduled_time) : '—'),
     },
-    { key: 'package', header: 'Package', render: (o) => o.package_name || o.service },
+    { key: 'package', header: 'Packages', render: (o) => packageSummary(o) },
     { key: 'sales', header: 'Sales', render: (o) => fmtMoney(o.list_amount ?? o.amount) },
     { key: 'discount', header: 'Discount', render: (o) => discountText(o) || '—' },
     { key: 'gross', header: 'Gross', render: (o) => fmtMoney(o.amount) },
@@ -361,6 +460,15 @@ export default function Orders() {
       align: 'right',
       render: (o) => (
         <div className="row-actions" style={{ justifyContent: 'flex-end' }}>
+          {canConfirm && o.status === 'pending' && (
+            <button
+              className="ok"
+              title="Confirm — service availed"
+              onClick={() => setToConfirm(o)}
+            >
+              <BadgeCheck size={13} />
+            </button>
+          )}
           <button title="View" onClick={() => setViewId(o.id)}>
             <Eye size={13} />
           </button>
@@ -548,6 +656,21 @@ export default function Orders() {
         />
       )}
 
+      <ConfirmDialog
+        open={Boolean(toConfirm)}
+        title="Confirm order"
+        message={
+          toConfirm
+            ? `Confirm order ${toConfirm.ref_no} — the customer availed this service? This locks the commission split and cannot be undone.`
+            : ''
+        }
+        confirmLabel="Confirm — service availed"
+        busyLabel="Confirming…"
+        busy={confirmBusy}
+        onConfirm={doConfirm}
+        onClose={() => setToConfirm(null)}
+      />
+
       {del && (
         <ConfirmDelete
           open
@@ -573,7 +696,6 @@ function AddOrderModal({ clients, accounts, agentId, canAddCustomer, onClose, on
     account_id: '',
     client_id: '',
     branch_id: '',
-    package_id: '',
     customer_id: '',
     scheduled_date: '',
     scheduled_time: '',
@@ -581,6 +703,7 @@ function AddOrderModal({ clients, accounts, agentId, canAddCustomer, onClose, on
     discount_value: '',
     notes: '',
   })
+  const [lines, setLines] = useState([])
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }))
@@ -641,15 +764,15 @@ function AddOrderModal({ clients, accounts, agentId, canAddCustomer, onClose, on
   const selClient = clients.find((c) => c.id === f.client_id)
   const branches = selClient?.client_branches ?? []
   const pkgs = (selClient?.client_packages ?? []).filter((p) => p.is_active)
-  const selPkg = pkgs.find((p) => p.id === f.package_id)
-  const listAmt = Number(selPkg?.price) || 0
+  const listAmt = linesTotal(lines)
   const discAmt = calcDiscount(listAmt, f.discount_kind, f.discount_value)
   const payAmt = finalAmount(listAmt, f.discount_kind, f.discount_value)
 
   const pickClient = (v) => {
     const cl = clients.find((c) => c.id === v)
     const brs = cl?.client_branches ?? []
-    setF((p) => ({ ...p, client_id: v, branch_id: brs.length === 1 ? brs[0].id : '', package_id: '' }))
+    setLines([])
+    setF((p) => ({ ...p, client_id: v, branch_id: brs.length === 1 ? brs[0].id : '' }))
   }
 
   const submit = async (e) => {
@@ -658,34 +781,55 @@ function AddOrderModal({ clients, accounts, agentId, canAddCustomer, onClose, on
     if (!f.account_id) return setErr('Pick an account')
     if (!f.client_id) return setErr('Pick a client')
     if (branches.length > 1 && !f.branch_id) return setErr('Pick a branch')
-    if (!f.package_id) return setErr('Pick a package')
+    if (lines.length === 0) return setErr('Add at least one package')
     if (!f.customer_id) return setErr('Pick a customer')
     if (f.discount_kind !== 'none') {
       const dv = Number(f.discount_value)
       if (!dv || dv <= 0) return setErr('Enter the discount')
       if (f.discount_kind === 'percent' && dv > 100) return setErr('Discount % cannot exceed 100')
-      if (f.discount_kind === 'fixed' && dv > listAmt) return setErr('Discount cannot exceed the package price')
+      if (f.discount_kind === 'fixed' && dv > listAmt) return setErr('Discount cannot exceed the packages total')
     }
     if (payAmt <= 0) return setErr('Amount after discount must be more than 0')
 
     setBusy(true)
-    const { error } = await supabase.from('orders').insert({
-      account_id: f.account_id,
-      customer_id: f.customer_id,
-      client_id: f.client_id,
-      branch_id: f.branch_id || branches[0]?.id || null,
-      package_id: f.package_id,
-      agent_id: agentId,
-      created_by: agentId,
-      scheduled_date: f.scheduled_date || null,
-      scheduled_time: f.scheduled_time || null,
-      discount_kind: f.discount_kind,
-      discount_value: f.discount_kind === 'none' ? 0 : Number(f.discount_value) || 0,
-      notes: f.notes.trim() || null,
-      status: 'pending',
-    })
+    const { data: order, error } = await supabase
+      .from('orders')
+      .insert({
+        account_id: f.account_id,
+        customer_id: f.customer_id,
+        client_id: f.client_id,
+        branch_id: f.branch_id || branches[0]?.id || null,
+        agent_id: agentId,
+        created_by: agentId,
+        scheduled_date: f.scheduled_date || null,
+        scheduled_time: f.scheduled_time || null,
+        discount_kind: f.discount_kind,
+        discount_value: f.discount_kind === 'none' ? 0 : Number(f.discount_value) || 0,
+        notes: f.notes.trim() || null,
+        status: 'pending',
+      })
+      .select('id')
+      .single()
+    if (error) {
+      setBusy(false)
+      return setErr(error.message)
+    }
+    const { error: itemsErr } = await supabase.from('order_items').insert(
+      lines.map((l) => ({
+        order_id: order.id,
+        package_id: l.package_id,
+        package_name: l.package_name,
+        unit_price: Number(l.unit_price) || 0,
+        qty: Number(l.qty) || 1,
+        client_kind: l.client_kind,
+        client_value: l.client_value,
+      })),
+    )
     setBusy(false)
-    if (error) return setErr(error.message)
+    if (itemsErr) {
+      await supabase.from('orders').delete().eq('id', order.id) // no half-built order
+      return setErr(itemsErr.message)
+    }
     toast.success('Order created')
     onDone()
   }
@@ -718,42 +862,30 @@ function AddOrderModal({ clients, accounts, agentId, canAddCustomer, onClose, on
           />
         </div>
 
-        <div className="field">
-          <label>Branch *</label>
-          <SearchSelect
-            value={f.branch_id}
-            onChange={(v) => set('branch_id', v)}
-            disabled={!f.client_id}
-            placeholder={f.client_id ? 'Pick a branch…' : 'Pick a client first'}
-            options={branches.map((b) => ({
-              value: b.id,
-              label: b.branch_name,
-              sub: `${b.city || '—'}${b.is_primary ? ' · primary' : ''}`,
-            }))}
-          />
-        </div>
+        {branches.length > 1 && (
+          <div className="field">
+            <label>Branch *</label>
+            <SearchSelect
+              value={f.branch_id}
+              onChange={(v) => set('branch_id', v)}
+              placeholder="Pick a branch…"
+              options={branches.map((b) => ({
+                value: b.id,
+                label: b.branch_name,
+                sub: `${b.city || '—'}${b.is_primary ? ' · primary' : ''}`,
+              }))}
+            />
+          </div>
+        )}
 
         <div className="field">
-          <label>Package *</label>
-          <SearchSelect
-            value={f.package_id}
-            onChange={(v) => set('package_id', v)}
+          <label>Packages *</label>
+          <PackageLines
+            lines={lines}
+            onChange={setLines}
+            packages={pkgs}
             disabled={!f.client_id}
-            placeholder={
-              !f.client_id
-                ? 'Pick a client first'
-                : pkgs.length
-                  ? 'Pick a package…'
-                  : 'This client has no active packages'
-            }
-            options={pkgs.map((p) => ({
-              value: p.id,
-              label: p.name,
-              sub:
-                p.commission_kind === 'percent'
-                  ? `client gets ${p.commission_value}%`
-                  : `client gets Rs ${Number(p.commission_value).toLocaleString('en-PK')}`,
-            }))}
+            emptyHint="This client has no active packages"
           />
           {f.client_id && pkgs.length === 0 && (
             <span className="field-hint">Add a package on the Packages page first.</span>
@@ -839,9 +971,9 @@ function AddOrderModal({ clients, accounts, agentId, canAddCustomer, onClose, on
           onTime={(v) => set('scheduled_time', v)}
         />
 
-        {f.package_id && (
+        {lines.length > 0 && (
           <div className="split-box">
-            <div className="split-row"><span>Sales</span><b>{fmtMoney(listAmt)}</b></div>
+            <div className="split-row"><span>Sales ({lines.length} package{lines.length > 1 ? 's' : ''})</span><b>{fmtMoney(listAmt)}</b></div>
             <div className="field-row" style={{ marginTop: 8 }}>
               <div className="field">
                 <label>Discount</label>
@@ -900,24 +1032,25 @@ function AddOrderModal({ clients, accounts, agentId, canAddCustomer, onClose, on
 function OrderDetailModal({ order, canEdit, canConfirm, clients, accounts, onClose, onChanged }) {
   const [mode, setMode] = useState('view') // view | edit
   const [busy, setBusy] = useState(false)
+  const [ask, setAsk] = useState(null) // null | 'confirm' | 'cancel' - inline confirm strip
 
   const isPending = order.status === 'pending'
 
-  const confirm = async () => {
-    if (!window.confirm('Confirm that the customer availed this service? This cannot be undone.')) return
+  const doConfirm = async () => {
     setBusy(true)
     const { error } = await supabase.rpc('confirm_order', { p_order_id: order.id })
     setBusy(false)
+    setAsk(null)
     if (error) return toast.error(error.message)
     toast.success(`Order ${order.ref_no} confirmed`)
     onChanged()
   }
 
-  const cancel = async () => {
-    if (!window.confirm('Cancel this order?')) return
+  const doCancel = async () => {
     setBusy(true)
     const { error } = await supabase.from('orders').update({ status: 'cancelled' }).eq('id', order.id)
     setBusy(false)
+    setAsk(null)
     if (error) return toast.error(error.message)
     toast.success('Order cancelled')
     onChanged()
@@ -948,7 +1081,23 @@ function OrderDetailModal({ order, canEdit, canConfirm, clients, accounts, onClo
         <Row label="Branch" value={order.branch ? `${order.branch.branch_name} · ${order.branch.city}` : '—'} />
         <Row label="Date" value={order.scheduled_date ? fmtDate(order.scheduled_date) : '—'} />
         <Row label="Time" value={order.scheduled_time ? slotLabel(order.scheduled_time) : '—'} />
-        <Row label="Package" value={order.package_name || order.service} />
+        <div className="view-row">
+          <span className="view-label">Packages</span>
+          <span className="view-value">
+            {(order.order_items ?? []).length > 0 ? (
+              <span className="pos-view-list">
+                {order.order_items.map((it) => (
+                  <span key={it.id} className="pos-view-line">
+                    <span>{it.package_name}{Number(it.qty) > 1 ? ` × ${it.qty}` : ''}</span>
+                    <span>{fmtMoney(it.line_total ?? it.unit_price)}</span>
+                  </span>
+                ))}
+              </span>
+            ) : (
+              order.package_name || order.service || '—'
+            )}
+          </span>
+        </div>
         {order.list_amount != null && order.discount_kind && order.discount_kind !== 'none' ? (
           <>
             <Row label="Sales" value={fmtMoney(order.list_amount)} />
@@ -973,26 +1122,49 @@ function OrderDetailModal({ order, canEdit, canConfirm, clients, accounts, onClo
         )}
       </div>
 
-      <div className="modal-actions">
-        <button type="button" className="btn btn-ghost btn-square" onClick={onClose}>
-          Close
-        </button>
-        {isPending && canEdit && (
-          <>
-            <button type="button" className="btn btn-ghost btn-square" onClick={cancel} disabled={busy}>
-              Cancel order
+      {ask ? (
+        <div className="confirm-inline">
+          <span>
+            {ask === 'confirm'
+              ? `Confirm order ${order.ref_no}? The customer availed this service — this locks the commission split and cannot be undone.`
+              : `Cancel order ${order.ref_no}?`}
+          </span>
+          <div className="modal-actions">
+            <button type="button" className="btn btn-ghost btn-square" onClick={() => setAsk(null)} disabled={busy}>
+              Back
             </button>
-            <button type="button" className="btn btn-ghost btn-square" onClick={() => setMode('edit')}>
-              Edit
+            <button
+              type="button"
+              className={`btn btn-square${ask === 'cancel' ? ' btn-danger' : ''}`}
+              onClick={ask === 'confirm' ? doConfirm : doCancel}
+              disabled={busy}
+            >
+              {busy ? 'Working…' : ask === 'confirm' ? 'Yes, confirm' : 'Yes, cancel it'}
             </button>
-          </>
-        )}
-        {isPending && canConfirm && (
-          <button type="button" className="btn btn-square" onClick={confirm} disabled={busy}>
-            <BadgeCheck size={14} /> {busy ? 'Confirming…' : 'Confirm — service availed'}
+          </div>
+        </div>
+      ) : (
+        <div className="modal-actions">
+          <button type="button" className="btn btn-ghost btn-square" onClick={onClose}>
+            Close
           </button>
-        )}
-      </div>
+          {isPending && canEdit && (
+            <>
+              <button type="button" className="btn btn-ghost btn-square" onClick={() => setAsk('cancel')}>
+                Cancel order
+              </button>
+              <button type="button" className="btn btn-ghost btn-square" onClick={() => setMode('edit')}>
+                Edit
+              </button>
+            </>
+          )}
+          {isPending && canConfirm && (
+            <button type="button" className="btn btn-square" onClick={() => setAsk('confirm')}>
+              <BadgeCheck size={14} /> Confirm — service availed
+            </button>
+          )}
+        </div>
+      )}
     </Modal>
   )
 }
@@ -1011,7 +1183,6 @@ function EditOrderModal({ order, clients, accounts, onCancel, onDone }) {
       client_id: cl?.id ?? '',
       branch_id: br?.id ?? '',
       customer_id: '',
-      package_id: order.package_id ?? '',
       scheduled_date: order.scheduled_date ?? '',
       scheduled_time: toSlotValue(order.scheduled_time),
       discount_kind: order.discount_kind ?? 'none',
@@ -1019,6 +1190,16 @@ function EditOrderModal({ order, clients, accounts, onCancel, onDone }) {
       notes: order.notes ?? '',
     }
   })
+  const [lines, setLines] = useState(() =>
+    (order.order_items ?? []).map((it) => ({
+      package_id: it.package_id,
+      package_name: it.package_name,
+      unit_price: Number(it.unit_price) || 0,
+      qty: Number(it.qty) || 1,
+      client_kind: it.client_kind,
+      client_value: it.client_value,
+    })),
+  )
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }))
@@ -1037,32 +1218,19 @@ function EditOrderModal({ order, clients, accounts, onCancel, onDone }) {
 
   const selClient = clients.find((c) => c.id === f.client_id)
   const branches = selClient?.client_branches ?? []
-  const pkgs = (() => {
-    const list = (selClient?.client_packages ?? []).filter((p) => p.is_active)
-    // keep the order's current package selectable even if since deactivated
-    if (
-      f.package_id &&
-      order.package_id === f.package_id &&
-      !list.some((p) => p.id === f.package_id)
-    ) {
-      const cur = (selClient?.client_packages ?? []).find((p) => p.id === f.package_id)
-      if (cur) list.push(cur)
-    }
-    return list
-  })()
-  const selPkg = pkgs.find((p) => p.id === f.package_id)
-  const listAmt = Number(selPkg?.price) || Number(order.list_amount) || 0
+  const pkgs = (selClient?.client_packages ?? []).filter((p) => p.is_active)
+  const listAmt = linesTotal(lines)
   const discAmt = calcDiscount(listAmt, f.discount_kind, f.discount_value)
   const payAmt = finalAmount(listAmt, f.discount_kind, f.discount_value)
 
   const pickClient = (v) => {
     const brs = clients.find((c) => c.id === v)?.client_branches ?? []
     const cur = brs.find((b) => b.branch_name === order.branch?.branch_name)
+    if (v !== f.client_id) setLines([])
     setF((p) => ({
       ...p,
       client_id: v,
       branch_id: cur?.id || brs.find((b) => b.is_primary)?.id || brs[0]?.id || '',
-      package_id: v === p.client_id ? p.package_id : '',
     }))
   }
 
@@ -1070,13 +1238,14 @@ function EditOrderModal({ order, clients, accounts, onCancel, onDone }) {
     e.preventDefault()
     setErr('')
     if (!f.account_id) return setErr('Pick an account')
-    if (!f.client_id || !f.branch_id || !f.customer_id) return setErr('Client, branch and customer are required')
-    if (!f.package_id) return setErr('Pick a package')
+    if (!f.client_id || !f.customer_id) return setErr('Client and customer are required')
+    if (branches.length > 1 && !f.branch_id) return setErr('Pick a branch')
+    if (lines.length === 0) return setErr('Add at least one package')
     if (f.discount_kind !== 'none') {
       const dv = Number(f.discount_value)
       if (!dv || dv <= 0) return setErr('Enter the discount')
       if (f.discount_kind === 'percent' && dv > 100) return setErr('Discount % cannot exceed 100')
-      if (f.discount_kind === 'fixed' && dv > listAmt) return setErr('Discount cannot exceed the package price')
+      if (f.discount_kind === 'fixed' && dv > listAmt) return setErr('Discount cannot exceed the packages total')
     }
     if (payAmt <= 0) return setErr('Amount after discount must be more than 0')
 
@@ -1086,9 +1255,8 @@ function EditOrderModal({ order, clients, accounts, onCancel, onDone }) {
       .update({
         account_id: f.account_id,
         client_id: f.client_id,
-        branch_id: f.branch_id,
+        branch_id: f.branch_id || branches[0]?.id || null,
         customer_id: f.customer_id,
-        package_id: f.package_id,
         scheduled_date: f.scheduled_date || null,
         scheduled_time: f.scheduled_time || null,
         discount_kind: f.discount_kind,
@@ -1096,8 +1264,29 @@ function EditOrderModal({ order, clients, accounts, onCancel, onDone }) {
         notes: f.notes.trim() || null,
       })
       .eq('id', order.id)
+    if (error) {
+      setBusy(false)
+      return setErr(error.message)
+    }
+    // replace the line items
+    const del = await supabase.from('order_items').delete().eq('order_id', order.id)
+    if (del.error) {
+      setBusy(false)
+      return setErr(del.error.message)
+    }
+    const ins = await supabase.from('order_items').insert(
+      lines.map((l) => ({
+        order_id: order.id,
+        package_id: l.package_id,
+        package_name: l.package_name,
+        unit_price: Number(l.unit_price) || 0,
+        qty: Number(l.qty) || 1,
+        client_kind: l.client_kind,
+        client_value: l.client_value,
+      })),
+    )
     setBusy(false)
-    if (error) return setErr(error.message)
+    if (ins.error) return setErr(ins.error.message)
     toast.success('Order updated')
     onDone()
   }
@@ -1122,15 +1311,16 @@ function EditOrderModal({ order, clients, accounts, onCancel, onDone }) {
             options={clients.map((c) => ({ value: c.id, label: `${c.ref_no} · ${c.company_name}` }))}
           />
         </div>
-        <div className="field">
-          <label>Branch *</label>
-          <SearchSelect
-            value={f.branch_id}
-            onChange={(v) => set('branch_id', v)}
-            disabled={!f.client_id}
-            options={branches.map((b) => ({ value: b.id, label: b.branch_name, sub: b.city || '—' }))}
-          />
-        </div>
+        {branches.length > 1 && (
+          <div className="field">
+            <label>Branch *</label>
+            <SearchSelect
+              value={f.branch_id}
+              onChange={(v) => set('branch_id', v)}
+              options={branches.map((b) => ({ value: b.id, label: b.branch_name, sub: b.city || '—' }))}
+            />
+          </div>
+        )}
         <div className="field">
           <label>Customer *</label>
           <SearchSelect
@@ -1144,32 +1334,19 @@ function EditOrderModal({ order, clients, accounts, onCancel, onDone }) {
           />
         </div>
         <div className="field">
-          <label>Package *</label>
-          <SearchSelect
-            value={f.package_id}
-            onChange={(v) => set('package_id', v)}
+          <label>Packages *</label>
+          <PackageLines
+            lines={lines}
+            onChange={setLines}
+            packages={pkgs}
             disabled={!f.client_id}
-            placeholder={
-              !f.client_id
-                ? 'Pick a client first'
-                : pkgs.length
-                  ? 'Pick a package…'
-                  : 'This client has no active packages'
-            }
-            options={pkgs.map((p) => ({
-              value: p.id,
-              label: p.name,
-              sub:
-                p.commission_kind === 'percent'
-                  ? `client gets ${p.commission_value}%`
-                  : `client gets Rs ${Number(p.commission_value).toLocaleString('en-PK')}`,
-            }))}
+            emptyHint="This client has no active packages"
           />
           <span className="field-hint">
-            Changing the package re-applies its current price and rate. Confirmed orders are never affected.
+            Adding a package applies its current price and rate. Confirmed orders are never affected.
           </span>
         </div>
-        {f.package_id && (
+        {lines.length > 0 && (
           <div className="split-box">
             <div className="split-row"><span>Sales</span><b>{fmtMoney(listAmt)}</b></div>
             <div className="field-row" style={{ marginTop: 8 }}>

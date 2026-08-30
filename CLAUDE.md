@@ -31,8 +31,9 @@ BlackDrivo's Admin UI rules (region-wise pattern, no-icons, etc.) do NOT apply h
 - Supabase: https://fmfbjpblhqgrwqeswztw.supabase.co  (project ref `fmfbjpblhqgrwqeswztw`)
 
 ## Stack
-- React 19 + Vite (JavaScript / JSX). `recharts` for Dashboard charts.
-- Route pages are `React.lazy`-loaded (App.jsx) so recharts stays in the Dashboard chunk;
+- React 19 + Vite (JavaScript / JSX). `recharts` for charts (Dashboard + Agent Performance).
+- Route pages are `React.lazy`-loaded (App.jsx); recharts is its own async chunk
+  (`BarChart-*.js`) shared by the pages that use it, loaded on first visit.
   `<Suspense>` fallback is inside `Layout` so the sidebar stays put during a page load.
 - Supabase: Auth + Postgres + RLS. Client uses the anon key only.
 - Deploy: Vercel (separate project)
@@ -77,6 +78,9 @@ Reference source (read-only, for style only): `D:\BlackDrivoAdmin\src`.
 - **Modals / forms** all use `src/components/Modal.jsx`. It closes ONLY via the
   X button or Esc - a backdrop click does nothing, so a stray click while filling
   a form never discards input. Keep it that way for any new form/modal.
+  **Never use `window.confirm` / `alert`** - use `src/components/ConfirmDialog.jsx`
+  (a plain Yes/Cancel popup) or an inline confirm strip (`.confirm-inline`, e.g. the
+  Order detail modal's Confirm / Cancel). `ConfirmDelete.jsx` = the type-DELETE variant.
 
 - **Left sidebar: LIGHT, not dark.** White background, `border-right`, a `#E6E6E6`
   brand strip at the top holding `GSlogo.png`. Nav is split into labelled sections
@@ -131,20 +135,31 @@ Left sidebar menu (grouped into sections - see UI conventions below):
                     owes us) ; GS net - Agent cut = Net.** + Account/Customer/Client/Package/
                     Agent. Loss rows (net < 0) flagged red + "Losses only" filter. Summary
                     cards = totals. CSV export. Gated on `finance`.
-- Finance:         Account / Agent / Client Ledger + Package Performance - the same numbers
-                    grouped/summed (shared `src/components/GroupedLedgerView.jsx`).
+- Finance:         Account / Agent / Client Ledger - the same numbers grouped/summed (shared
+                    `src/components/GroupedLedgerView.jsx`, one whole order per row).
                     **Agent Ledger** adds Owed / Paid / Outstanding (we owe the agent).
                     **Client Ledger** adds Receivable / Received / Outstanding (client owes us).
                     Both have a per-row **Settle** button (`finance.add`) -> `<SettlementModal>`
                     (`src/components/SettlementModal.jsx`) pre-filled to that party + outstanding,
                     writes to `payouts`, refreshes.
+- Performance:     Package Performance (`src/pages/PackagePerformance.jsx`, standalone - NOT
+                    GroupedLedgerView) - confirmed orders EXPLODED into `order_items`, grouped
+                    by package name: Orders / Qty sold / Sales / Client cut / GS gross (all
+                    line-level). No Agent cut / Net (those are order-level). Gated `performance`.
+- Performance:     Agent Performance (`src/pages/AgentPerformance.jsx`) - per-agent productivity
+                    from ALL orders (not just confirmed): Orders / Confirmed / Conversion %
+                    (confirmed / (confirmed+cancelled)) / Packages sold / Sales / GS net /
+                    Commission earned / Avg order value / Company net. recharts leaderboard
+                    (metric switch: net/commission/sales/orders) + stacked orders-by-status
+                    bar. RangeTabs + date range + CSV. Gated `performance`.
 - Finance:         Settlements (`src/pages/Settlements.jsx`) - record money IN from a client or
                     money OUT to an agent (type / who / amount / date / method / note).
                     Add/edit/delete need `finance.add|edit|delete` (admin only). Feeds the
                     ledgers' Received/Paid columns. Backed by the `payouts` table (party
                     'client' = money in, 'agent' = money out).
-                    `src/lib/ledger.js` = `LEDGER_SELECT` + `ledgerAmounts`
-                    (sales/client/gsGross/discount/gsNet/agent/net) + `addTotals`.
+                    `src/lib/ledger.js` = `LEDGER_SELECT` (embeds `order_items`) + `ledgerAmounts`
+                    (sales/client/gsGross/discount/gsNet/agent/net) + `addTotals` +
+                    `lineClientCut(item)` + `packageSummary(order)`.
 - Administration:  User Management - internal staff list; Super Admin / Admin can
                     CREATE users, everyone else is read-only (view the user table)
 - Administration:  Role Access    - permission matrix per role + custom-role CRUD
@@ -177,15 +192,19 @@ The UI reads permissions (never hard-codes role checks) except the super_admin b
 
 ## Permission model - page x action, role-wise + user-wise (migration 2026-08-27)
 - **Pages**: `dashboard` (view), `clients`, `packages`, `customers`, `orders`, `accounts`,
-  `finance`, `users` (view/add/edit/delete), `roles` (view/edit). `orders` also has `confirm`.
-  `finance` add/edit/delete gate the Payouts page only (the ledgers are view-only).
-  Catalogue: `src/lib/permissions.js` (`PERMISSION_PAGES`).
+  `finance`, `performance` (view), `users` (view/add/edit/delete), `roles` (view/edit).
+  `orders` also has `confirm`. `finance` add/edit/delete gate the Settlements page only (the
+  ledgers are view-only). `performance` (view) gates the Performance section (Package /
+  Agent Performance) - those pages still read `orders` so a Performance-only role also needs
+  `orders.view`. Catalogue: `src/lib/permissions.js` (`PERMISSION_PAGES`).
   On the `users` page, `delete` = "deactivate". `perm_action` enum now includes `confirm`.
-- **RULE - the Role Access matrix is now automatic.** Adding a page = (1) add to
-  `PERMISSION_PAGES`, (2) gate the nav item + page with `can('<key>', ...)`, (3) point
-  that table's RLS at `has_perm('<key>', ...)`. **No `role_permissions` seeding** - an
-  unseeded (page, action) coalesces to denied for every non-super role until a Super
-  Admin switches it on. (Old per-page seed migrations stay valid, just unnecessary now.)
+- **RULE - EVERY new navigable page/section gets a Role Access row.** Adding a page =
+  (1) add to `PERMISSION_PAGES` (with its `group` = the sidebar section label),
+  (2) gate the nav item (`Sidebar.jsx` `page:`) + the page component with `can('<key>', ...)`,
+  (3) point any table RLS it needs at `has_perm('<key>', ...)`. `role_permissions` seeding
+  is optional (an unseeded page defaults to denied for non-super roles until a Super Admin
+  toggles it), but seed the built-in `admin` row so plain admins keep access - see
+  `022_performance_permission.sql`. Only Profile is exempt.
 - `role_permissions (role text -> roles.key, page, action, allowed)` - per-role grants
 - `user_permissions (user_id, page, action, allowed)` - per-user override (wins outright)
 - `private.has_perm(page text, action perm_action)`: super_admin -> true; else user
@@ -233,7 +252,7 @@ The user logs in with the password set at create time.
                         contact_person/email/phone/address/city]. One primary branch per client
                         (partial unique index). RLS follows the `clients` page permission.
 - **Display IDs**: ONE shared sequence `public.ref_no_seq` (starts 1001) feeds `ref_no bigint`
-  on customers / clients / orders / client_packages - the next record created gets the next
+  on customers / clients / orders / client_packages / accounts / payouts - the next record created gets the next
   number, regardless of type (order 1004 -> package 1005 -> client 1006). ref_no is
   display-only (no FK uses it), shown as a plain number with no leading '#'.
   [010_shared_ref_no_sequence.sql, replaced the per-table identity sequences]
@@ -244,16 +263,26 @@ The user logs in with the password set at create time.
                         branch_id, agent_id, scheduled_date +
                         scheduled_time (both optional; time is a 30-min slot picked from a
                         grouped popover - `src/components/TimeSlotPicker.jsx`, list in
-                        `src/lib/slots.js`), package_id + package_name (snapshot),
-                        service (legacy, auto-filled from the package name), list_amount
-                        (snapshot of the package price),
-                        discount_kind ('none'|'fixed'|'percent') + discount_value,
-                        amount (DERIVED by the snapshot trigger = list_amount - discount),
+                        `src/lib/slots.js`),
+                        discount_kind ('none'|'fixed'|'percent') + discount_value (ORDER-level),
+                        list_amount / amount / package_name / service - all **DERIVED from the
+                        line items** (see `order_items` + `recompute_order_from_items`):
+                        list_amount = Σ line_total, amount = list_amount - discount (pending
+                        only), package_name/service = summary ("Massage x2, Facial").
+                        service is now NULLABLE. package_id / client_kind / client_value kept
+                        as first-line summary + the confirm_order legacy fallback.
                         status (pending|confirmed|cancelled), + frozen split
                         (client_amount / agent_amount / company_amount) set by `confirm_order()`.
                         The frozen split is NOT shown in the UI (order detail hides it).
-                        [005_orders.sql, 006_client_packages.sql, 007_package_price_discount.sql,
-                        011_orders_scheduled_at.sql, 012_orders_date_time_slot.sql]
+                        [005_orders.sql, 007_package_price_discount.sql,
+                        012_orders_date_time_slot.sql, 021_order_items_multi_package.sql]
+- `order_items`      - **a POS-style line list: one order holds MANY packages.** (order_id,
+                        package_id -> client_packages on delete set null, package_name / unit_price
+                        / client_kind / client_value = snapshot, qty, line_total = unit_price*qty
+                        generated). `trg_order_items_snapshot` fills missing snapshot fields from
+                        the package; `trg_order_items_recompute` -> `recompute_order_from_items`
+                        re-sums the parent order. RLS follows the `orders` page permission.
+                        [021_order_items_multi_package.sql]
 - `client_packages`  - ref_no, (client_id, name, price, commission_kind 'fixed'|'percent',
                         commission_value, description (optional free text, "• " bullet lines),
                         is_active). Per-client package menu; `price` is the
@@ -267,13 +296,17 @@ The user logs in with the password set at create time.
                         019_confirm_order_client_pct_on_sales.sql]
 - `client_package_log` - append-only; one row per rate change, written by the SECURITY DEFINER
                         trigger `log_client_package_change()` (old/new kind+value + auth.uid()).
-- **Order <-> package snapshot**: `trg_orders_snapshot` (BEFORE INSERT/UPDATE) copies the
-  package's name + rate + price onto the order on insert or package-change *while
-  status='pending'*, derives `amount` = `list_amount - discount` (floored at 0), and copies
-  the agent's commission. So editing/deactivating a package NEVER affects existing orders,
-  and `amount` is always server-derived (the client never sends it). `confirm_order()` uses
-  the order's frozen `client_kind/value` (falls back to live client config only for legacy
-  orders with no snapshot).
+- **Order totals from line items**: `trg_orders_snapshot` (BEFORE INSERT/UPDATE) now only
+  re-derives `amount` = `list_amount - discount` (floored at 0) + snapshots the agent's
+  commission, all *while status='pending'*. The package name/price/rate now live per line in
+  `order_items`; `recompute_order_from_items()` (fired by `trg_order_items_recompute`) sums
+  the lines into `orders.list_amount` and refreshes `amount` + the `package_name` summary.
+  `amount` is always server-derived (the client never sends it). Editing/deactivating a
+  package NEVER affects existing orders (each line froze its own rate).
+- **`confirm_order()` client cut = Σ per line**: for each `order_items` row, a % client cut
+  is charged on that line's `line_total`, a fixed cut is `client_value * qty`; summed into
+  `client_amount`. Orders with no lines (pre-021) fall back to the order's frozen
+  `client_kind/value`. GS gross / GS net / agent cut / net are unchanged (order-level).
 - **Where each cut is configured**: client cut (what the client KEEPS from the cash) -> the
   **package** (Packages page); agent cut (what GraphicSpark PAYS the agent) -> the **agent's
   profile** (User Management -> Edit user), with an on/off switch (`commission_active`);
@@ -348,12 +381,15 @@ The user logs in with the password set at create time.
       `on delete set null`, so deleting a package never errors and existing orders keep their
       frozen rate. Gated on `packages` perm (delete needs `packages.delete`).
 - [x] Orders page (`src/pages/Orders.jsx`) - Add order (**Account** * -> Client -> Branch ->
-      **Package** -> Customer; creator = agent). Amount auto-fills from the package price; a
-      per-order **discount** (none / fixed Rs / %) gives the final "customer pays" amount
-      (amount is never typed by hand). A client with no active package can't get orders. View
-      modal: Confirm (orders.confirm) -> `confirm_order` RPC freezes the split (NOT shown);
-      Edit / Cancel while pending. `<SearchSelect>` combobox. 11 routes, all real. Table columns:
-      ID, Created, Customer, Client, Account, Appt date, Appt time, Package,
+      **Packages** -> Customer; creator = agent). **POS-style multi-package**: `<PackageLines>`
+      - search a package, **Add**, each line has a qty −/＋ stepper; "Sales" = running subtotal
+      of all lines. A per-order **discount** (none / fixed Rs / %) on that subtotal gives the
+      final "customer pays" amount (amount is never typed by hand). Insert is 2-step (order row
+      -> `order_items`, order deleted if the items insert fails); Edit replaces `order_items`.
+      A client with no active package can't get orders. View modal lists the lines; Confirm
+      (orders.confirm) -> `confirm_order` RPC freezes the split (NOT shown); Edit / Cancel while
+      pending. `<SearchSelect>` combobox. Table columns:
+      ID, Created, Customer, Client, Account, Appt date, Appt time, Packages (summary),
       Sales, Discount, Gross, Agent, Status. Stat cards: Total, Pending, Confirmed, Sales,
       Discount, Gross (last three = Σ over confirmed orders; **Sales** = Σ list_amount
       (before discount), **Gross** = Σ amount (customer pays, after discount),

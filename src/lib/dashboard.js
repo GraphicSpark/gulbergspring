@@ -246,13 +246,26 @@ export function buildDashboard({ orders, customers, clients, payouts, window, ra
   const topAccounts = topBy((o) => (o.account ? { id: o.account.id, name: o.account.name } : null), (o) => ledgerAmounts(o).net)
   const topClients = topBy((o) => (o.client ? { id: o.client.id, name: o.client.company_name } : null), (o) => ledgerAmounts(o).gsNet)
   const topAgents = topBy((o) => (o.agent ? { id: o.agent.id, name: o.agent.full_name } : null), () => 1)
-  const topPackages = topBy(
-    (o) => {
-      const n = o.package_name || o.service
-      return n ? { id: n, name: n } : null
-    },
-    () => 1,
-  )
+  // packages: explode each confirmed order into its line items
+  const topPackages = (() => {
+    const m = new Map()
+    for (const o of confirmed) {
+      const items = o.order_items?.length
+        ? o.order_items
+        : o.package_name || o.service
+          ? [{ package_name: o.package_name || o.service, qty: 1 }]
+          : []
+      for (const it of items) {
+        const n = it.package_name
+        if (!n) continue
+        const cur = m.get(n) ?? { id: n, name: n, value: 0, orders: 0 }
+        cur.value += Number(it.qty) || 1
+        cur.orders += 1
+        m.set(n, cur)
+      }
+    }
+    return [...m.values()].sort((a, b) => b.value - a.value).slice(0, 6)
+  })()
 
   const statusPie = [
     { name: 'Confirmed', value: counts.confirmed, fill: '#1e874b' },

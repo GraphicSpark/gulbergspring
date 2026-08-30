@@ -18,6 +18,7 @@ const AccountLedger = lazy(() => import('./pages/AccountLedger'))
 const AgentLedger = lazy(() => import('./pages/AgentLedger'))
 const ClientLedger = lazy(() => import('./pages/ClientLedger'))
 const PackagePerformance = lazy(() => import('./pages/PackagePerformance'))
+const AgentPerformance = lazy(() => import('./pages/AgentPerformance'))
 const Settlements = lazy(() => import('./pages/Settlements'))
 const RoleAccess = lazy(() => import('./pages/RoleAccess'))
 const Profile = lazy(() => import('./pages/Profile'))
@@ -40,6 +41,7 @@ export default function App() {
           <Route path="agent-ledger" element={<AgentLedger />} />
           <Route path="client-ledger" element={<ClientLedger />} />
           <Route path="package-performance" element={<PackagePerformance />} />
+          <Route path="agent-performance" element={<AgentPerformance />} />
           <Route path="settlements" element={<Settlements />} />
           <Route path="users" element={<Users />} />
           <Route path="profile" element={<Profile />} />

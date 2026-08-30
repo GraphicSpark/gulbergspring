@@ -4,7 +4,7 @@ import { Coins, Download, ReceiptText, RefreshCw, Tag, TrendingUp, Users, Wallet
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/useAuth'
 import { fmtDate, fmtMoney } from '../lib/format'
-import { LEDGER_SELECT, ZERO_TOTALS, addTotals, ledgerAmounts } from '../lib/ledger'
+import { LEDGER_SELECT, ZERO_TOTALS, addTotals, ledgerAmounts, packageSummary } from '../lib/ledger'
 import { rangeFrom } from '../lib/filters'
 import { downloadCsv, toCsv } from '../lib/csv'
 import RangeTabs from '../components/RangeTabs'
@@ -62,7 +62,7 @@ export default function FinancialLedger() {
       if (from && d < from) return false
       if (to && d > `${to}T23:59:59`) return false
       if (q) {
-        const hay = `${o.ref_no} ${o.account?.name ?? ''} ${o.customer?.full_name ?? ''} ${o.client?.company_name ?? ''} ${o.package_name ?? o.service ?? ''}`.toLowerCase()
+        const hay = `${o.ref_no} ${o.account?.name ?? ''} ${o.customer?.full_name ?? ''} ${o.client?.company_name ?? ''} ${packageSummary(o)}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
       return true
@@ -110,7 +110,7 @@ export default function FinancialLedger() {
         account: o.account?.name ?? '—',
         customer: o.customer?.full_name ?? '',
         client: o.client?.company_name ?? '',
-        package: o.package_name || o.service || '',
+        package: packageSummary(o),
         agent: o.agent?.full_name ?? '',
         sales: fmtMoney(a.sales),
         client_cut: fmtMoney(a.client),
@@ -145,7 +145,7 @@ export default function FinancialLedger() {
     { key: 'account', header: 'Account', render: (o) => o.account?.name ?? '—' },
     { key: 'customer', header: 'Customer', render: (o) => o.customer?.full_name ?? '—' },
     { key: 'clientco', header: 'Client', render: (o) => o.client?.company_name ?? '—' },
-    { key: 'package', header: 'Package', render: (o) => o.package_name || o.service || '—' },
+    { key: 'package', header: 'Packages', render: (o) => packageSummary(o) },
     { key: 'agent', header: 'Agent', render: (o) => o.agent?.full_name ?? '—' },
     { key: 'sales', header: 'Sales', align: 'right', render: (o) => fmtMoney(ledgerAmounts(o).sales) },
     { key: 'clientcut', header: 'Client cut', align: 'right', render: (o) => fmtMoney(ledgerAmounts(o).client) },

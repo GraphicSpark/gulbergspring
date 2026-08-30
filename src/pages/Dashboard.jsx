@@ -43,6 +43,7 @@ const ORDER_SELECT = `
   id, ref_no, status, amount, list_amount, discount_kind, discount_value,
   client_amount, agent_amount, company_amount, created_at, confirmed_at,
   scheduled_date, scheduled_time, package_name, service, customer_id,
+  order_items ( package_name, qty ),
   account:account_id ( id, name ),
   client:client_id ( id, company_name ),
   customer:customer_id ( full_name ),
