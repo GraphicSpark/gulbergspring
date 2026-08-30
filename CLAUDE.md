@@ -160,6 +160,16 @@ Left sidebar menu (grouped into sections - see UI conventions below):
                     `src/lib/ledger.js` = `LEDGER_SELECT` (embeds `order_items`) + `ledgerAmounts`
                     (sales/client/gsGross/discount/gsNet/agent/net) + `addTotals` +
                     `lineClientCut(item)` + `packageSummary(order)`.
+- Reports:         Reports (`src/pages/Reports.jsx`) - left panel of grouped report names +
+                    `<ReportView>` (`src/components/reports/ReportView.jsx`): RangeTabs
+                    (+ custom dates) / KPI cards / optional recharts chart / dense table /
+                    CSV export. Catalogue = `src/lib/reports.js` `REPORTS` (each a pure
+                    `build({orders,payouts,customers,clients,accounts,from,to}) -> {kpis,
+                    columns,rows,filename,chart?}`). v1 (11): P&L summary, Sales trend,
+                    Discounts given, Order status, Client report, Agent report, Account report,
+                    Package sales, Top customers, Cash flow, Settlements. Page fetches
+                    orders/payouts/customers/clients/accounts once; each report also needs that
+                    table's own `*.view` RLS. Gated `reports`.
 - Administration:  User Management - internal staff list; Super Admin / Admin can
                     CREATE users, everyone else is read-only (view the user table)
 - Administration:  Role Access    - permission matrix per role + custom-role CRUD
@@ -192,11 +202,12 @@ The UI reads permissions (never hard-codes role checks) except the super_admin b
 
 ## Permission model - page x action, role-wise + user-wise (migration 2026-08-27)
 - **Pages**: `dashboard` (view), `clients`, `packages`, `customers`, `orders`, `accounts`,
-  `finance`, `performance` (view), `users` (view/add/edit/delete), `roles` (view/edit).
+  `finance`, `performance` (view), `reports` (view), `users` (view/add/edit/delete), `roles` (view/edit).
   `orders` also has `confirm`. `finance` add/edit/delete gate the Settlements page only (the
-  ledgers are view-only). `performance` (view) gates the Performance section (Package /
-  Agent Performance) - those pages still read `orders` so a Performance-only role also needs
-  `orders.view`. Catalogue: `src/lib/permissions.js` (`PERMISSION_PAGES`).
+  ledgers are view-only). `performance` (view) gates the Performance section and `reports`
+  (view) gates the Reports page - those pages read `orders` / `payouts` / `customers` /
+  `clients` / `accounts`, so such a role also needs those tables' own `*.view`.
+  Catalogue: `src/lib/permissions.js` (`PERMISSION_PAGES`).
   On the `users` page, `delete` = "deactivate". `perm_action` enum now includes `confirm`.
 - **RULE - EVERY new navigable page/section gets a Role Access row.** Adding a page =
   (1) add to `PERMISSION_PAGES` (with its `group` = the sidebar section label),

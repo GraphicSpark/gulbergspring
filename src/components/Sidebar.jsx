@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom'
 import {
   Building2,
   ClipboardList,
+  FileBarChart,
   Gauge,
   IdCard,
   Landmark,
@@ -49,6 +50,10 @@ const NAV_SECTIONS = [
       { to: '/package-performance', label: 'Package Performance', icon: PackageOpen, page: 'performance' },
       { to: '/agent-performance', label: 'Agent Performance', icon: Gauge, page: 'performance' },
     ],
+  },
+  {
+    label: 'Reports',
+    items: [{ to: '/reports', label: 'Reports', icon: FileBarChart, page: 'reports' }],
   },
   {
     label: 'Administration',

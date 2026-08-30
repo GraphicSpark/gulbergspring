@@ -59,6 +59,7 @@ export const PERMISSION_PAGES = [
   { key: 'accounts', label: 'Accounts', group: 'Account', actions: ['view', 'add', 'edit', 'delete'] },
   { key: 'finance', label: 'Finance', group: 'Finance', actions: ['view', 'add', 'edit', 'delete'] },
   { key: 'performance', label: 'Performance', group: 'Performance', actions: ['view'] },
+  { key: 'reports', label: 'Reports', group: 'Reports', actions: ['view'] },
   { key: 'users', label: 'User Management', group: 'Administration', actions: ['view', 'add', 'edit', 'delete'] },
   { key: 'roles', label: 'Role Access', group: 'Administration', actions: ['view', 'edit'] },
 ]
