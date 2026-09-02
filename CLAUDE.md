@@ -346,7 +346,10 @@ The user logs in with the password set at create time.
   `apply_migration` / `execute_sql` (execute_sql runs as read-only user)
 
 ## First super_admin - DONE
-- `gulbergspring@gmail.com` / name "Maqbool" / role `super_admin` (created 2026-08-26).
+- `maqboolit@gmail.com` / name "Maqbool Ahmad" / role `super_admin` (created 2026-08-26 as
+  `gulbergspring@gmail.com`; email changed to `maqboolit@gmail.com` 2026-08-30 via
+  `change_super_admin_email` migration - updated `auth.users` + `auth.identities` +
+  `profiles.email`, still email/password provider, password unchanged).
 - Note: the `trg_profiles_protect` trigger blocks role changes outside an admin
   session, so seeding roles via SQL needs
   `alter table public.profiles disable trigger trg_profiles_protect;` ... `enable` around it.
@@ -356,7 +359,7 @@ The user logs in with the password set at create time.
 - [ ] Folder: user renames `E:\GulbergSPA` -> `E:\GraphicSparkCRM`, then reopens Claude Code there
 - [~] GitHub: repo kept as `gulbergspring` (remote points there; code pushed 2026-08-27)
 - [ ] Supabase: user renames project display name in Dashboard (ref `fmfbjpblhqgrwqeswztw` is unchanged)
-- Note: first super_admin login stays `gulbergspring@gmail.com` (existing auth account, not affected by rename)
+- Note: first super_admin login is now `maqboolit@gmail.com` (changed from `gulbergspring@gmail.com` 2026-08-30)
 
 ## TODO
 - [ ] In Supabase Auth settings: turn OFF public sign-up (Authentication > Sign In / Providers)
