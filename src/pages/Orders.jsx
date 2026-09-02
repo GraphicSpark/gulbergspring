@@ -717,25 +717,28 @@ function AddOrderModal({ clients, accounts, agentId, canAddCustomer, onClose, on
     setQErr('')
     const name = quick.name.trim()
     if (!name) return setQErr('Customer name is required')
-    if (!isValidPkMobile(quick.phoneLocal)) {
-      return setQErr(pkPhoneError(quick.phoneLocal) || 'Enter a valid phone number')
+    // phone is optional - validate only if typed
+    if (quick.phoneLocal && !isValidPkMobile(quick.phoneLocal)) {
+      return setQErr(pkPhoneError(quick.phoneLocal) || 'Enter a valid phone number or leave it blank')
     }
-    const phone = toStored(quick.phoneLocal)
+    const phone = quick.phoneLocal ? toStored(quick.phoneLocal) : null
 
     setQBusy(true)
-    // existing-customer check (phone is the natural key, not DB-enforced)
-    const { data: dupe } = await supabase
-      .from('customers')
-      .select('id, ref_no, full_name, phone')
-      .eq('phone', phone)
-      .maybeSingle()
-    if (dupe) {
-      setQBusy(false)
-      setCustomers((prev) => (prev.some((c) => c.id === dupe.id) ? prev : [...prev, dupe]))
-      set('customer_id', dupe.id)
-      setQuick(null)
-      toast(`${dupe.full_name} already has this number — selected`)
-      return
+    // existing-customer check (only when a number was given)
+    if (phone) {
+      const { data: dupe } = await supabase
+        .from('customers')
+        .select('id, ref_no, full_name, phone')
+        .eq('phone', phone)
+        .maybeSingle()
+      if (dupe) {
+        setQBusy(false)
+        setCustomers((prev) => (prev.some((c) => c.id === dupe.id) ? prev : [...prev, dupe]))
+        set('customer_id', dupe.id)
+        setQuick(null)
+        toast(`${dupe.full_name} already has this number — selected`)
+        return
+      }
     }
 
     const { data, error } = await supabase
@@ -938,7 +941,7 @@ function AddOrderModal({ clients, accounts, agentId, canAddCustomer, onClose, on
                   />
                 </div>
                 <div className="field">
-                  <label>Phone number</label>
+                  <label>Phone number (optional)</label>
                   <PkPhoneInput
                     value={quick.phoneLocal}
                     onChange={(v) => setQuick((q) => ({ ...q, phoneLocal: v }))}

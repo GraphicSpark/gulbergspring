@@ -448,18 +448,23 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, initialPhon
     e.preventDefault()
     setErr('')
     if (!form.full_name.trim()) return setErr('Name is required')
-    if (!isValidPkMobile(form.phoneLocal)) return setErr(phoneErr || 'Invalid phone number')
+    // phone is optional - only validate the format if something was typed
+    if (form.phoneLocal && !isValidPkMobile(form.phoneLocal)) {
+      return setErr(phoneErr || 'Enter a valid phone number or leave it blank')
+    }
 
-    const phone = toStored(form.phoneLocal)
+    const phone = form.phoneLocal ? toStored(form.phoneLocal) : null
     setBusy(true)
 
-    // one customer per phone number
-    let dupeQ = supabase.from('customers').select('ref_no, full_name').eq('phone', phone)
-    if (editing) dupeQ = dupeQ.neq('id', row.id)
-    const { data: dupe } = await dupeQ.maybeSingle()
-    if (dupe) {
-      setBusy(false)
-      return setErr(`A customer with this number already exists — #${dupe.ref_no} ${dupe.full_name}.`)
+    // one customer per phone number (skip the check when there's no number)
+    if (phone) {
+      let dupeQ = supabase.from('customers').select('ref_no, full_name').eq('phone', phone)
+      if (editing) dupeQ = dupeQ.neq('id', row.id)
+      const { data: dupe } = await dupeQ.maybeSingle()
+      if (dupe) {
+        setBusy(false)
+        return setErr(`A customer with this number already exists — #${dupe.ref_no} ${dupe.full_name}.`)
+      }
     }
 
     const payload = {
@@ -529,7 +534,7 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, initialPhon
 
         <div className="field-row">
           <div className="field">
-            <label htmlFor="c-phone">Contact no *</label>
+            <label htmlFor="c-phone">Contact no (optional)</label>
             <PkPhoneInput
               id="c-phone"
               value={form.phoneLocal}
@@ -611,8 +616,8 @@ function ImportModal({ createdBy, onClose, onDone }) {
     const iPhone = pick(head, 'phone', 'contact', 'mobile')
     const iSource = pick(head, 'source')
 
-    if (iName === -1 || iPhone === -1) {
-      toast.error('CSV needs Name and Phone columns')
+    if (iName === -1) {
+      toast.error('CSV needs a Name column')
       return
     }
 
@@ -626,23 +631,28 @@ function ImportModal({ createdBy, onClose, onDone }) {
     for (let r = 1; r < rows.length; r++) {
       const row = rows[r]
       const name = (row[iName] ?? '').trim()
-      const local = toLocal(row[iPhone] ?? '')
+      const rawPhone = iPhone === -1 ? '' : (row[iPhone] ?? '').trim()
+      const local = toLocal(rawPhone)
       const src = iSource === -1 ? '' : (row[iSource] ?? '').trim().toLowerCase()
 
       if (!name) {
         skipped.push({ line: r + 1, reason: 'missing name' })
         continue
       }
-      if (!isValidPkMobile(local)) {
-        skipped.push({ line: r + 1, reason: `invalid phone "${(row[iPhone] ?? '').trim()}"` })
-        continue
+      // phone is optional: blank is fine, a non-blank bad number is skipped
+      let stored = null
+      if (rawPhone) {
+        if (!isValidPkMobile(local)) {
+          skipped.push({ line: r + 1, reason: `invalid phone "${rawPhone}"` })
+          continue
+        }
+        stored = toStored(local)
+        if (known.has(stored) || seen.has(stored)) {
+          skipped.push({ line: r + 1, reason: `customer with ${stored} already exists` })
+          continue
+        }
+        seen.add(stored)
       }
-      const stored = toStored(local)
-      if (known.has(stored) || seen.has(stored)) {
-        skipped.push({ line: r + 1, reason: `customer with ${stored} already exists` })
-        continue
-      }
-      seen.add(stored)
       valid.push({
         full_name: name,
         phone: stored,
@@ -673,8 +683,8 @@ function ImportModal({ createdBy, onClose, onDone }) {
     <Modal open onClose={onClose} title="Import customers" width={460}>
       <div className="modal-form">
         <p className="field-hint">
-          CSV with a header row. Required: <b>Name</b>, <b>Phone</b>. Optional: <b>Source</b>.
-          Phone is validated the same way (10 digits, starts with 3).
+          CSV with a header row. Required: <b>Name</b>. Optional: <b>Phone</b>, <b>Source</b>.
+          A phone, if given, is validated (10 digits, starts with 3); a bad one skips that row.
         </p>
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

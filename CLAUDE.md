@@ -374,11 +374,13 @@ The user logs in with the password set at create time.
 - [x] Profile page (`src/pages/Profile.jsx`) - own details + self-service password change (re-auths first)
 - [x] Customer page (`src/pages/Customers.jsx`) - View modal (-> Edit), type-DELETE confirm
       (`src/components/ConfirmDelete.jsx`), source + date filters, CSV import (+ sample) / export.
-      Fields: Name*, Contact no* (phone), Source (optional), Notes?. (email/gender/address DB columns
-      exist but are unused in the UI.) **`customers.phone` is UNIQUE** (partial index,
-      015_customers_phone_unique.sql) - the Add/Edit form pre-checks + catches 23505
-      ("A customer with this number already exists"); CSV import skips already-registered
-      numbers; the Orders quick-add reuses the existing customer.
+      Fields: Name*, Contact no (phone, **OPTIONAL** everywhere - Add/Edit, Orders quick-add,
+      CSV import), Source (optional), Notes?. (email/gender/address DB columns exist but are
+      unused in the UI.) `customers.phone` is nullable + has a **partial** unique index
+      (`where phone is not null`, 015_customers_phone_unique.sql) - so many phone-less
+      customers are fine, but a given number is still one customer. When a phone IS entered
+      the Add/Edit form pre-checks + catches 23505; CSV import skips already-registered
+      numbers; the Orders quick-add reuses the existing customer. A blank phone skips all that.
 - [x] Reusable table kit: `src/components/data/` (DataTable, FilterBar, Pagination, BulkBar, StatCards).
       `<DataTable dense>` = tight spreadsheet rows (~23px) + gridlines + tabular-nums; used by the
       Finance ledgers.
