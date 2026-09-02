@@ -224,6 +224,9 @@ The UI reads permissions (never hard-codes role checks) except the super_admin b
   `role_permissions` for **every** role in `user_roles` and OR-combines them. RLS on
   clients/customers/orders/client_branches (-> `clients`), client_packages + the package log
   (-> `packages`), accounts (-> `accounts`), payouts (-> `finance`) all call `has_perm`.
+  **Exception (024):** `accounts` + `client_packages` SELECT also allow `orders.view` -
+  the Add/Edit Order form needs those lists even for an agent who can't see the
+  Accounts / Packages pages. Nav gating in the UI is unchanged.
 - Role Access page: **By Role** (also creates/renames/deletes custom roles) and
   **By User** (override one person; role default = union of their roles). Writes are
   super_admin-only (RLS `rp_super_admin` / `up_super_admin` / `roles_super` / `ur_super`).
