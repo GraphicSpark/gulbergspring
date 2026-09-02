@@ -6,6 +6,14 @@ import { AuthProvider } from './context/AuthProvider'
 import App from './App.jsx'
 import './index.css'
 
+// Register the service worker so the app is installable and the manifest's
+// share_target works (share a phone number from the call log -> Add Customer).
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {})
+  })
+}
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <BrowserRouter>

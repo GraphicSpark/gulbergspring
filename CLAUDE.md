@@ -439,5 +439,19 @@ prefix; the user types the 10-digit local part which must match `/^3\d{9}$/`
 `src/components/PhoneLink.jsx` renders a stored phone as a formatted `tel:` link
 (tap-to-call) - used in the Customer table + view modal.
 
+### Getting a caller's number into "Add Customer" (mobile)
+A browser can't read the phone's call screen, so the number has to arrive via
+clipboard, a share, or a URL:
+- **Clipboard** - `PkPhoneInput.jsx` has a paste button + an auto-hint chip
+  (reads `navigator.clipboard`, normalises via `toLocal`).
+- **PWA share target** - `public/manifest.webmanifest` (`share_target` GET ->
+  `/customers`, params `shared_text/shared_title/shared_url`) + `public/sw.js`
+  (minimal, registered in `main.jsx`). Install the app on Android, then Share a
+  number from the call log -> the CRM opens Add Customer pre-filled.
+- **Deep link** - `Customers.jsx` also honours `/customers?phone=03001234567`
+  (for a phone automation like Tasker / iOS Shortcuts). It opens Add Customer with
+  the phone seeded (`CustomerModal` `initialPhone`), then wipes the query params.
+  iOS Safari does NOT support `share_target`; Shortcuts + the deep link is the iOS path.
+
 ## Still to confirm
 - Customer fields (membership, preferred services)? Base fields for now.

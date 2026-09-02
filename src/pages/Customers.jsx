@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import {
   Download,
@@ -76,8 +77,28 @@ export default function Customers() {
   const [bulkAction, setBulkAction] = useState('')
 
   const [addOpen, setAddOpen] = useState(false)
+  const [sharedPhone, setSharedPhone] = useState('') // phone handed in via the PWA share target / ?phone=
   const [viewRow, setViewRow] = useState(null)
   const [importOpen, setImportOpen] = useState(false)
+
+  // PWA "share a number to the app" / deep link: /customers?phone=03001234567
+  // (Android share_target posts the number as `shared_text`). Open Add Customer
+  // with the phone pre-filled; the URL params are wiped when the modal closes.
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    if (addOpen || !canAdd) return
+    const raw =
+      searchParams.get('phone') ||
+      searchParams.get('shared_text') ||
+      searchParams.get('shared_title') ||
+      searchParams.get('shared_url') ||
+      ''
+    if (!raw) return
+    const local = toLocal(raw)
+    setSharedPhone(isValidPkMobile(local) ? local : '')
+    setAddOpen(true)
+    if (!isValidPkMobile(local)) toast('Couldn’t read a phone number - enter it manually')
+  }, [searchParams, canAdd, addOpen])
   const [del, setDel] = useState(null) // { kind: 'one'|'bulk', row?, ids? }
   const [delBusy, setDelBusy] = useState(false)
 
@@ -343,10 +364,17 @@ export default function Customers() {
       {addOpen && (
         <CustomerModal
           mode="edit"
+          initialPhone={sharedPhone}
           createdBy={profile?.id}
-          onClose={() => setAddOpen(false)}
+          onClose={() => {
+            setAddOpen(false)
+            setSharedPhone('')
+            if (searchParams.toString()) setSearchParams({}, { replace: true })
+          }}
           onDone={() => {
             setAddOpen(false)
+            setSharedPhone('')
+            if (searchParams.toString()) setSearchParams({}, { replace: true })
             fetchRows()
           }}
         />
@@ -396,7 +424,7 @@ export default function Customers() {
 }
 
 // ── View / Add / Edit ─────────────────────────────────────────────────────
-function CustomerModal({ mode: initialMode, row, canEdit, createdBy, onClose, onDone }) {
+function CustomerModal({ mode: initialMode, row, canEdit, createdBy, initialPhone, onClose, onDone }) {
   const [mode, setMode] = useState(initialMode) // 'view' | 'edit'
   const editing = Boolean(row)
 
@@ -408,7 +436,7 @@ function CustomerModal({ mode: initialMode, row, canEdit, createdBy, onClose, on
           source: row.source ?? '',
           notes: row.notes ?? '',
         }
-      : EMPTY,
+      : { ...EMPTY, phoneLocal: initialPhone || '' },
   )
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
