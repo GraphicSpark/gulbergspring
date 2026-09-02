@@ -40,7 +40,7 @@ const ORDER_SELECT = `
   scheduled_date, scheduled_time,
   list_amount, discount_kind, discount_value,
   client_kind, client_value, client_amount,
-  agent_kind, agent_value, agent_amount, company_amount,
+  agent_id, agent_kind, agent_value, agent_amount, company_amount,
   confirmed_at,
   order_items ( id, package_id, package_name, unit_price, qty, line_total, client_kind, client_value ),
   customer:customer_id ( ref_no, full_name, phone ),
@@ -52,12 +52,8 @@ const ORDER_SELECT = `
 
 const statusClass = (s) => (s === 'confirmed' ? 'on' : s === 'cancelled' ? 'bad' : 'off')
 
-const discountText = (o) => {
-  if (!o.discount_kind || o.discount_kind === 'none') return ''
-  return o.discount_kind === 'percent'
-    ? `${o.discount_value}% off`
-    : `${fmtMoney(o.discount_value)} off`
-}
+// the discount actually applied, in Rs (Sales - Gross) - works for % or fixed
+const discountAmount = (o) => Math.max((Number(o.list_amount) || 0) - (Number(o.amount) || 0), 0)
 
 // discount amount off a list price; final = max(list - discount, 0)
 const calcDiscount = (list, kind, value) => {
@@ -184,6 +180,14 @@ export default function Orders() {
   const canEdit = can('orders', 'edit')
   const canDelete = can('orders', 'delete')
   const canConfirm = can('orders', 'confirm')
+  const canFinance = can('finance', 'view') // sees every order's agent cut / internal split
+
+  // the agent commission on an order - visible to finance, or to the agent on their own order
+  const agentCutFor = (o) => {
+    if (o.status !== 'confirmed') return '—'
+    if (canFinance || o.agent_id === profile?.id) return fmtMoney(o.agent_amount)
+    return '—'
+  }
 
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
@@ -373,11 +377,11 @@ export default function Orders() {
       city: o.branch?.city ?? '',
       package: packageSummary(o),
       sales: m(o.list_amount ?? o.amount),
-      discount: discountText(o),
+      discount: discountAmount(o) > 0 ? fmtMoney(discountAmount(o)) : '',
       gross: m(o.amount),
-      client_gets: m(o.client_amount),
-      agent_gets: m(o.agent_amount),
-      company_net: m(o.company_amount),
+      client_gets: canFinance ? m(o.client_amount) : '',
+      agent_gets: canFinance || o.agent_id === profile?.id ? m(o.agent_amount) : '',
+      company_net: canFinance ? m(o.company_amount) : '',
       agent: o.agent?.full_name ?? '',
       confirmed: o.confirmed_at ? fmtDateTime(o.confirmed_at) : '',
       notes: o.notes ?? '',
@@ -446,9 +450,14 @@ export default function Orders() {
     },
     { key: 'package', header: 'Packages', render: (o) => packageSummary(o) },
     { key: 'sales', header: 'Sales', render: (o) => fmtMoney(o.list_amount ?? o.amount) },
-    { key: 'discount', header: 'Discount', render: (o) => discountText(o) || '—' },
+    {
+      key: 'discount',
+      header: 'Discount',
+      render: (o) => (discountAmount(o) > 0 ? fmtMoney(discountAmount(o)) : '—'),
+    },
     { key: 'gross', header: 'Gross', render: (o) => fmtMoney(o.amount) },
     { key: 'agent', header: 'Agent', render: (o) => o.agent?.full_name ?? '—' },
+    { key: 'agentcut', header: 'Agent cut', render: agentCutFor },
     {
       key: 'status',
       header: 'Status',
@@ -1104,14 +1113,7 @@ function OrderDetailModal({ order, canEdit, canConfirm, clients, accounts, onClo
         {order.list_amount != null && order.discount_kind && order.discount_kind !== 'none' ? (
           <>
             <Row label="Sales" value={fmtMoney(order.list_amount)} />
-            <Row
-              label="Discount"
-              value={
-                order.discount_kind === 'percent'
-                  ? `${order.discount_value}%  (− ${fmtMoney(Number(order.list_amount) - Number(order.amount))})`
-                  : `${fmtMoney(order.discount_value)} off`
-              }
-            />
+            <Row label="Discount" value={`− ${fmtMoney(discountAmount(order))}`} />
             <Row label="Gross (customer pays)" value={fmtMoney(order.amount)} />
           </>
         ) : (

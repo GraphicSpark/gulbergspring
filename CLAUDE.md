@@ -326,10 +326,15 @@ The user logs in with the password set at create time.
   profile** (User Management -> Edit user), with an on/off switch (`commission_active`);
   GS gross / GS net (what the client OWES GraphicSpark) + net -> automatic, never set by hand.
 - `profiles` carries `commission_kind` ('fixed'|'percent') + `commission_value` = the agent's
-  cut of the GS gross, plus `commission_active` (bool, default true) = an on/off switch: when
-  false, `confirm_order()` gives the agent 0 and GraphicSpark keeps the whole cut. The switch
-  is read LIVE at confirm (affects pending orders; confirmed ones stay frozen).
-  [008_agent_commission_toggle.sql]. Non-admins can't change their own commission
+  cut (fixed Rs, or % of GS net), plus `commission_active` (bool, default true) = an on/off
+  switch: when false, `confirm_order()` gives the agent 0 and GraphicSpark keeps the whole cut.
+  **All three are read LIVE from `profiles` at confirm time** (`025_...` - previously
+  `confirm_order` used the `orders.agent_kind/value` snapshot taken at order-creation, so a
+  commission set/changed after an order was created had no effect even on a pending order).
+  Setting an agent's commission now flows to every still-pending order; confirmed orders keep
+  their frozen split. `orders_snapshot_package` still writes `orders.agent_kind/value` on
+  insert but `confirm_order` no longer reads it. [008_agent_commission_toggle.sql,
+  025_confirm_order_live_agent_commission.sql]. Non-admins can't change their own commission
   (trg_profiles_protect - role/is_active/commission_kind/value/active).
   `clients.commission_kind/value` columns still exist but are UNUSED by the UI (superseded by
   packages); kept only as the `confirm_order` legacy fallback.
@@ -409,13 +414,16 @@ The user logs in with the password set at create time.
       (orders.confirm) -> `confirm_order` RPC freezes the split (NOT shown); Edit / Cancel while
       pending. `<SearchSelect>` combobox. Table columns:
       ID, Created, Customer, Client, Account, Appt date, Appt time, Packages (summary),
-      Sales, Discount, Gross, Agent, Status. Stat cards: Total, Pending, Confirmed, Sales,
-      Discount, Gross (last three = Σ over confirmed orders; **Sales** = Σ list_amount
-      (before discount), **Gross** = Σ amount (customer pays, after discount),
+      Sales, **Discount** (always Rs = Sales − Gross, never "10% / off"), Gross, Agent,
+      **Agent cut** (`agent_amount` on confirmed orders - shown only to `finance.view` users
+      or to the agent on their OWN order; "—" otherwise), Status. Stat cards: Total, Pending,
+      Confirmed, Sales, Discount, Gross (last three = Σ over confirmed orders; **Sales** =
+      Σ list_amount (before discount), **Gross** = Σ amount (customer pays, after discount),
       **Discount** = Sales − Gross). Main filter row: status, client, account (searchable
       `<SearchSelect>`), "My orders only". Advanced: Created from/to, Appointment from/to,
-      Appt time from/to (TimeSlotPicker). CSV **export** (all columns incl. Account + the
-      frozen split) via `lib/csv`.
+      Appt time from/to (TimeSlotPicker). CSV **export** via `lib/csv` - Client Gets /
+      GraphicSpark Net columns are blank for non-`finance.view` users, Agent Gets only for
+      the caller's own orders (same scoping as the table).
 - [x] Accounts page (`src/pages/Accounts.jsx`) - internal business units. Add Account:
       name * / Account Manager * (internal-user `<SearchSelect>`) / Location *. Table
       (ID, Account name, Account manager, Location, Added), stat cards (Total, This month),
